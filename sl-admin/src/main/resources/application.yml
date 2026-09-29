@@ -8,6 +8,15 @@ spring:
     redis:
       host: ${XSL_REDIS_HOST:localhost}
       port: ${XSL_REDIS_PORT:6380}
+  datasource:
+    driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+    url: jdbc:shardingsphere:classpath:sharding.yaml
+
+xsl:
+  pool:
+    namespace: ${XSL_POOL_NS:0}
+    capacity: ${XSL_POOL_CAPACITY:5000}
+    refill-ratio: 0.2
 
 management:
   endpoints:

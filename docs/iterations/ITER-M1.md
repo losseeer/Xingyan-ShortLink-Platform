@@ -10,8 +10,9 @@
 
 | 任务 | 状态 | 说明 |
 |---|---|---|
-| M1-00 仓库骨架 | 🟡 | 骨架与 Enforcer 约束已提交（43f991c）；`mvn verify` 等 JDK 21 安装完成后补跑 |
+| M1-00 仓库骨架 | ✅ | 43f991c + d15b422；`mvn verify` 全绿（JDK21 编译），Enforcer 禁依赖经"注入 sl-admin 触发构建失败"负向验证 |
 | M1-01 中间件环境 | ✅ | e0fdefa；全栈 healthy，topic `shortlink-click` 就绪 |
+| M1-03 ClickHouse 模型 | ✅ | 提前完成（纯 SQL 不依赖 JDK）；ReplacingMergeTree 去重 + 物化视图分钟聚合已实测 |
 
 ## 3. 实测数字与凭证
 

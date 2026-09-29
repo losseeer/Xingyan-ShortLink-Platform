@@ -4,7 +4,9 @@ services:
 
   mysql:
     image: mysql:8.4
-    ports: ["3306:3306"]
+    # 宿主机 Homebrew mysqld 占用 127.0.0.1:3306（IPv4 回环优先于 Docker 的 *:3306），
+    # 故宿主侧走 3307；容器网络内其他服务仍用 mysql:3306。
+    ports: ["3307:3306"]
     environment:
       MYSQL_ROOT_PASSWORD: xsl-dev
     volumes:

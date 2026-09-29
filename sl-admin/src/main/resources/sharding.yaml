@@ -1,0 +1,82 @@
+# M1-02 spike：ShardingSphere-JDBC 分片路由（DESIGN 4.1 / 4.2）
+# 单机演示拓扑：同实例两库 xsl_00/xsl_01，表结构完全一致，按分片键哈希路由。
+# 读写拆表双分片轴：link_route/code_tenant_index/short_code_pool 按 short_code；
+#                   short_link/route_rule/audit_log/outbox 按 tenant_id。
+# props.sql-show=true 输出 Actual SQL 命中库，即路由正确性的观察凭证（8.1 验证方式）。
+# M1-06 起应用侧接管此配置（连接参数改由环境变量注入）。
+
+dataSources:
+  ds0:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://127.0.0.1:3307/xsl_00?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: root
+    password: xsl-dev
+    maxPoolSize: 10
+  ds1:
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    jdbcUrl: jdbc:mysql://127.0.0.1:3307/xsl_01?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: root
+    password: xsl-dev
+    maxPoolSize: 10
+
+rules:
+  - !SHARDING
+    tables:
+      link_route:
+        actualDataNodes: ds$->{0..1}.link_route
+        databaseStrategy:
+          standard:
+            shardingColumn: short_code
+            shardingAlgorithmName: code-hash-mod
+      code_tenant_index:
+        actualDataNodes: ds$->{0..1}.code_tenant_index
+        databaseStrategy:
+          standard:
+            shardingColumn: short_code
+            shardingAlgorithmName: code-hash-mod
+      short_code_pool:
+        actualDataNodes: ds$->{0..1}.short_code_pool
+        databaseStrategy:
+          standard:
+            shardingColumn: short_code
+            shardingAlgorithmName: code-hash-mod
+      short_link:
+        actualDataNodes: ds$->{0..1}.short_link
+        databaseStrategy:
+          standard:
+            shardingColumn: tenant_id
+            shardingAlgorithmName: tenant-hash-mod
+      route_rule:
+        actualDataNodes: ds$->{0..1}.route_rule
+        databaseStrategy:
+          standard:
+            shardingColumn: tenant_id
+            shardingAlgorithmName: tenant-hash-mod
+      audit_log:
+        actualDataNodes: ds$->{0..1}.audit_log
+        databaseStrategy:
+          standard:
+            shardingColumn: tenant_id
+            shardingAlgorithmName: tenant-hash-mod
+      outbox:
+        actualDataNodes: ds$->{0..1}.outbox
+        databaseStrategy:
+          standard:
+            shardingColumn: tenant_id
+            shardingAlgorithmName: tenant-hash-mod
+    shardingAlgorithms:
+      code-hash-mod:
+        # 5.5.1 中 HASH_MOD 属 auto 算法，不能用于带 shardingColumn 的 standard 策略；
+        # INLINE(groovy) 为标准算法，且路由结果可手工推算，便于断言测试。
+        type: INLINE
+        props:
+          algorithm-expression: ds$->{Math.abs(short_code.hashCode()) % 2}
+      tenant-hash-mod:
+        type: INLINE
+        props:
+          algorithm-expression: ds$->{tenant_id % 2}
+
+props:
+  sql-show: true

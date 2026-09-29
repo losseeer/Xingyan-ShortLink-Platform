@@ -18,5 +18,11 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- M1-08：归因拼接属性测试（DEVELOPMENT_PLAN M1-08 验收口径） -->
+        <dependency>
+            <groupId>net.jqwik</groupId>
+            <artifactId>jqwik</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

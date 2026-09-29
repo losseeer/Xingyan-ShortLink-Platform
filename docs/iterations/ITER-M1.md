@@ -18,6 +18,7 @@
 | M1-05 短码池服务 | ✅ | sl-common `ShortCodeGenerator`（SecureRandom Base62 定长 7）+ sl-admin `ShortCodePoolService`（Redis List 水位 + SETNX 补池锁 + LPOP 原子批量租用 + seen SET 全局去重 + DB `INSERT IGNORE` 登记 + 租用状态回写）；`make verify` 全绿（全仓 25 单测），其中集成测试 3 项对活的 compose Redis(6380)/MySQL(3307) 实测：补池 300 唯一且 DB 计数 300、20 线程×50 并发租用 1000 码零重复、空池重补后新码与旧码不相交 |
 | M1-06 生成 API | ✅ | `POST/GET/PATCH /api/v1/links`：https+域名白名单准入、自定义码保留字/冲突校验（SETNX+DB 双防线）、short_link+outbox 同事务写、link_route+code_tenant_index 提交后同步、Redis `sl:r:{code}` 缓存 24h+rand、PATCH 合并语义+version 递增、code_tenant_index 越权 403；`LinkServiceIntegrationTest` 8 项（活体 infra）+ sl-common 新增 8 项单测（准入/雪花），`make verify` 全仓 41 测全绿 + `scripts/accept-m1-06.sh` 活应用实测 21/21 通过；sharding.yaml 连接参数完成环境变量注入（§6 旧待办关闭） |
 | M1-07 跳转服务（纯 302） | ✅ | sl-jump `GET /s/{code}` 与裸 `/{code}`：Caffeine(L1,30s)→Redis(L2)→link_route 回源(L3) 三级读、空值标记 `sl:r:nx:{code}` 防穿透、Lua version 比较防旧值写回覆盖、status/expire/access_limit(Lua 原子扣减)检查→302；`JumpResolver` 接口即 DESIGN 第十章"纯 302 开关"扩展位；单测 6+活体集成 3，`make verify` 全仓 50 测全绿；`scripts/accept-m1-07.sh` 对活 jump(8020) 14/14 通过（302·404+标记·403·410 过期·410 超限·二查 db 计数不增） |
+| M1-08 归因参数透传 | ✅ | sl-common `AttributionParamMerger`：白名单=附录 B 契约（channel_id/campaign_id/promoter_id/utm_*），`&/?` 续接（悬空 `?` 复用）、追加段插在 `#` fragment 之前、值按 RFC 3986 unreserved 严格 URL-encode、禁覆盖目标原有参数（含白名单键，编码形态键 `%6E` 亦可识别）、`xy_click_id`（c+雪花）由模块生成且拒绝外部传入、`trace_id` 随 Result 返回但不入 URL；jqwik 属性测试 3 性质（400/300/200 例）+ 确定性单测 9 项，`make verify` 全仓 62 测全绿 |
 
 ## 3. 实测数字与凭证
 
@@ -27,6 +28,7 @@
 | 短码唯一性（M1-05） | 生成/租用全链路无重复 | ✅ 通过 | `ShortCodeGeneratorTest`：20 万样本撞码 <10、字符集/长度正则校验；`ShortCodePoolServiceTest`（活体 infra）：并发 20×50 租用后 Set 大小=1000（零重复）；`sql-show` 可见 pool 登记按 short_code 精确路由 ds0/ds1、租回写 UPDATE 双库各命中自身分片 |
 | 生成链路一致性（M1-06） | 三表+outbox+缓存一致、越权拒绝 | ✅ 通过 | `accept-m1-06.sh` 对活 sl-admin(8030) 21 项断言：创建 200+7 位码+short_url、双分片库求和后 short_link/code_tenant_index/outbox 各 1 行、route_json 与 `sl:r:{code}` 缓存一致（version 1）、evil.test/http→400 SL-4001、他租户 GET→403 SL-4030、自定义码冲突→409、保留字→400、PATCH 后缓存与 link_route version=2、同 Idempotency-Key 二次 POST 返回同一 code |
 | 跳转正确性与缓存层级（M1-07） | 302/404/403/410 语义 + 冷码回源二查命中缓存 | ✅ 通过 | `accept-m1-07.sh` 对活 sl-jump(8020) 14 项断言：正常码 302 且 Location=origin_url（`/s/` 与裸路径同义）；不存在码 404 且 `sl:r:nx:` 标记生成；status=1→403；过期→410；access_limit=2 第 3 击→410；冷码首查后 `xsl_jump_route_lookup_total{level="db"}` 1.0→2.0、二查保持 2.0 不增（指标计数佐证回源仅一次），`sl:r:{code}` 写回存在 |
+| 归因拼接健壮性（M1-08） | 任意 query/编码/`#` 片段下结果可被 `java.net.URI` 解析且原参数逐字节无损；注入值不改语义 | ✅ 通过 | `AttributionParamMergerPropertyTest` 3 性质（tries 400/300/200）：生成 URL 覆盖 空/悬空`?`/多参/尾`&`/编码片段/任意 fragment 六形态，断言原 query 前缀逐字节保留、fragment 原样、追加对数=Result.appended 数；注入样本（`a&b=1`、`%26evil=1`、`x#y`、中文、200 字符长串）后追加段恒为 2 对且解码还原原值；`surefire-reports`：PropertyTest `Tests run: 3, Failures: 0`，确定性 `Tests run: 9, Failures: 0` |
 | （待 M1-11 压测后回填） | | | |
 
 ## 4. 与设计的偏差及回写
@@ -50,6 +52,8 @@
 | M1-07 布隆/Cuckoo 前置检查缺席 | 计划含"布隆→Caffeine→Redis→回源"；Cuckoo filter 结构本身排在 M2/M3，M1 引入只会增加半成品 | 以空值标记 `sl:r:nx:{code}`(5min) + L1 负缓存(30s) 作为 M1 的穿透防线（DESIGN 5.2 步骤 1 的兜底路径先行）；M3 补 Cuckoo 时此层可退役 |
 | M1-07 jump 独立持有分片配置 | Enforcer 禁 jump→admin 依赖（DESIGN 3.4），无法复用 admin 的 sharding.yaml | `sl-jump/sharding-jump.yaml` 只声明 link_route 单表最小配置、连接参数同款环境变量注入；两份配置的同步性由本迭代脚本 phys_db 与 INLINE 表达式互校保障，M2 若配置中心化再消重 |
 | M1-07 验收直连 sl-jump:8020 | nginx `/s/**`→jump upstream 属 M1-10 交付 | 脚本对 jump 裸实例断言语义；M1-10 起并入 nginx+多实例链路 |
+| M1-08 只交付纯函数模块，jump 尚未调用 | DESIGN 5.2 的拼接点在跳转链路，但归因值（channel/campaign/promoter）此时只存在于 short_link 行，RouteConfig 未携带，且 M1-09 ClickEvent 才是消费方 | 模块+属性测试先行收口验收口径；M1-09 把归因字段并入 route_json/ClickEvent 时在 Direct302Resolver 接线（Location=merge 结果） |
+| M1-08 `trace_id` 不追加到 URL | 计划行写"生成 xy_click_id + trace_id"，但附录 B 跳转参数契约不含 trace_id，追加即违反"只允许白名单参数" | trace_id 经 `Result.traceId()` 返回，随 M1-09 ClickEvent/日志贯通（DESIGN 8.5 口径），URL 保持最小契约 |
 
 ## 5. 本期决策记录
 
@@ -60,11 +64,12 @@
 - **M1-05 池模型**：Redis List 为租用唯一活性来源（`LPOP count` 原子批量出池保证并发零重复），`short_code_pool` 表仅作登记账本（`INSERT IGNORE` + 租用状态回写），用于 Redis 数据丢失后按 status=0 重建池与审计；全局唯一性第一道防线是 seen SET（SADD 去重），表主键冲突是兜底。补水位阈值 `capacity×refill-ratio`，补池临界区用 SETNX 60s 锁串行化。
 - **M1-06 双分片轴写入口径**：short_link+outbox 同 tenant_id 分片轴 → 一个本地事务真原子；link_route+code_tenant_index 在 short_code 轴（另一库），主事务提交后同步补写——失败时 API 如实报错但 outbox(status=0) 留痕，M3 补偿重放收敛。跨轴不做 XA：与 DESIGN 8.4"outbox+最终一致"一致，M1 同步写只是把常态延迟降到 0。短码唯一性 = Redis SETNX(`sl:code:{code}`) 第一道 + index/route 主键兜底。
 - **M1-07 三级读与负反馈**：L1 Caffeine(30s) 含空结果缓存（新建链接最长 30s 内可能仍 404，个人项目口径可接受，M2 可加 admin→jump 广播失效）；L2 Redis 命中直路；L3 回源后 Lua `version 比较`写回防旧覆盖新（DESIGN 8.4 缓存回写口径落地）。access_limit 扣减用 Lua（首次以配额初始化→DECR），返回 -1 判超限；与 DB 定期对账留 M2。`JumpResolver` 接口 + `xsl.jump.mode=direct302` 即 DESIGN 第十章纯 302 开关。
+- **M1-08 拼接语义**：以"追加段插在首个 `#` 之前"为规范（query 注入止于 fragment 边界）；禁覆盖判定同时匹配原文与百分号解码后的键，防 `%6E` 变形绕过；`xy_click_id` 只信模块生成（attrs 中同名键丢弃）；编码采用 RFC 3986 unreserved 白名单而非 `URLEncoder`（后者把空格编成 `+`、保留 `*`，与 query 语义混叠）。jqwik 作为 test-only 依赖进 sl-common，不污染运行时。
 - ~~（待定）M1-02 是否真用 Flyway~~ 已决，见上。
 
 ## 6. 下期待办与风险
 
-- M1-08 归因参数透传（sl-common 白名单拼接模块 + jqwik 属性测试：query/编码/`#` 片段任意性下可解析且原参数无损、注入不改语义）；M1-09 ClickEvent 链路。
+- M1-09 ClickEvent 链路（jump 异步 Kafka+WAL、consumer→CH、`GET /stats/links/{code}`）；归因字段进 route_json 后在 Direct302Resolver 接线 `AttributionParamMerger`（M1-08 遗留集成点）。M1-10 nginx+jump×2 多域名。
 - sharding.yaml 环境变量注入已完成（`?placeholder-type=environment`）；容器内 profile 注入 `XSL_MYSQL_HOST=mysql` 留 M1-10 compose 化时接线。
 - 生成 API 尚未接 `xsl_base.tenant.quota_*` 配额校验（DESIGN 5.1 步骤 1）；与白名单 DB 化、outbox 补偿任务（`POST /internal/outbox/replay`）一并在 M2/M3 落地，M1 越权与一致性路径已按口径实现。
 - outbox.id 目前为分片内 AUTO_INCREMENT，跨分片不唯一——M3 outbox 实现时改 ShardingSphere key-generator(SNOWFLAKE) 或应用侧雪花。

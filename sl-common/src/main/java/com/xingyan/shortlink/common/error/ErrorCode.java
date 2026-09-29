@@ -10,6 +10,7 @@ public enum ErrorCode {
     LINK_EXPIRED("SL-4101", "link expired or access limit exceeded"),
     LINK_FORBIDDEN("SL-4030", "link disabled or banned"),
     URL_NOT_ALLOWED("SL-4001", "origin url rejected by admission check"),
+    VALIDATION_FAILED("SL-4002", "request validation failed"),
     TENANT_QUOTA_EXCEEDED("SL-4290", "tenant quota exceeded"),
     RATE_LIMITED("SL-4291", "too many requests"),
     SIGN_INVALID("SL-4010", "signature invalid or replayed"),

@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 class ShardingRoutingVerificationTest {
 
-    private static final String SS_URL = "jdbc:shardingsphere:classpath:sharding.yaml";
+    private static final String SS_URL = "jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment";
     private static DataSource shardingDs;
 
     @BeforeAll

@@ -10,13 +10,20 @@ spring:
       port: ${XSL_REDIS_PORT:6380}
   datasource:
     driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
-    url: jdbc:shardingsphere:classpath:sharding.yaml
+    url: jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment
+  jackson:
+    property-naming-strategy: SNAKE_CASE
 
 xsl:
   pool:
     namespace: ${XSL_POOL_NS:0}
     capacity: ${XSL_POOL_CAPACITY:5000}
     refill-ratio: 0.2
+  admission:
+    # M1 白名单走配置注入（来源 xsl_base.domain_pool 的同步任务与人工审核队列留 M2）
+    allowed-hosts: ${XSL_ALLOWED_HOSTS:mock.ticketsales.test,.xystage.test}
+  link:
+    base-domain: ${XSL_LINK_BASE_DOMAIN:xy1.test}
 
 management:
   endpoints:

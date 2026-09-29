@@ -3,22 +3,23 @@
 # 读写拆表双分片轴：link_route/code_tenant_index/short_code_pool 按 short_code；
 #                   short_link/route_rule/audit_log/outbox 按 tenant_id。
 # props.sql-show=true 输出 Actual SQL 命中库，即路由正确性的观察凭证（8.1 验证方式）。
-# M1-06 起应用侧接管此配置（连接参数改由环境变量注入）。
+# M1-06 起连接参数由环境变量注入（$${VAR::default}），默认值即单机开发口径；
+# 容器内 profile 注入 XSL_MYSQL_HOST=mysql、XSL_MYSQL_PORT=3306、密码走 compose secret。
 
 dataSources:
   ds0:
     dataSourceClassName: com.zaxxer.hikari.HikariDataSource
     driverClassName: com.mysql.cj.jdbc.Driver
-    jdbcUrl: jdbc:mysql://127.0.0.1:3307/xsl_00?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
-    username: root
-    password: xsl-dev
+    jdbcUrl: jdbc:mysql://$${XSL_MYSQL_HOST::127.0.0.1}:$${XSL_MYSQL_PORT::3307}/xsl_00?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: $${XSL_MYSQL_USER::root}
+    password: $${XSL_MYSQL_PASSWORD::xsl-dev}
     maxPoolSize: 10
   ds1:
     dataSourceClassName: com.zaxxer.hikari.HikariDataSource
     driverClassName: com.mysql.cj.jdbc.Driver
-    jdbcUrl: jdbc:mysql://127.0.0.1:3307/xsl_01?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
-    username: root
-    password: xsl-dev
+    jdbcUrl: jdbc:mysql://$${XSL_MYSQL_HOST::127.0.0.1}:$${XSL_MYSQL_PORT::3307}/xsl_01?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: $${XSL_MYSQL_USER::root}
+    password: $${XSL_MYSQL_PASSWORD::xsl-dev}
     maxPoolSize: 10
 
 rules:

@@ -45,7 +45,7 @@ class ShortCodePoolServiceTest {
         redis.afterPropertiesSet();
         HikariDataSource ds = new HikariDataSource();
         ds.setDriverClassName("org.apache.shardingsphere.driver.ShardingSphereDriver");
-        ds.setJdbcUrl("jdbc:shardingsphere:classpath:sharding.yaml");
+        ds.setJdbcUrl("jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment");
         ds.setMaximumPoolSize(10);
         ssDs = ds;
         jdbc = new JdbcTemplate(ds);

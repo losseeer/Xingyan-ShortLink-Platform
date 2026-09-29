@@ -16,6 +16,7 @@
 | M1-03 ClickHouse 模型 | ✅ | 提前完成（纯 SQL 不依赖 JDK）；ReplacingMergeTree 去重 + 物化视图分钟聚合已实测 |
 | M1-04 租户与 HMAC 鉴权 | ✅ | 网关 HmacAuthFilter（签名/时间戳窗口/nonce 防重放/X-Tenant-Id 注入）+ admin IdempotencyFilter（Redis 24h 重放）；单测 11 项 + `scripts/accept-m1-04.sh` 实测 7/7 通过（正确签名→200、篡改→401、旧时间戳→401、重放 nonce→401、未知 key→401、幂等二次 POST 同响应×2） |
 | M1-05 短码池服务 | ✅ | sl-common `ShortCodeGenerator`（SecureRandom Base62 定长 7）+ sl-admin `ShortCodePoolService`（Redis List 水位 + SETNX 补池锁 + LPOP 原子批量租用 + seen SET 全局去重 + DB `INSERT IGNORE` 登记 + 租用状态回写）；`make verify` 全绿（全仓 25 单测），其中集成测试 3 项对活的 compose Redis(6380)/MySQL(3307) 实测：补池 300 唯一且 DB 计数 300、20 线程×50 并发租用 1000 码零重复、空池重补后新码与旧码不相交 |
+| M1-06 生成 API | ✅ | `POST/GET/PATCH /api/v1/links`：https+域名白名单准入、自定义码保留字/冲突校验（SETNX+DB 双防线）、short_link+outbox 同事务写、link_route+code_tenant_index 提交后同步、Redis `sl:r:{code}` 缓存 24h+rand、PATCH 合并语义+version 递增、code_tenant_index 越权 403；`LinkServiceIntegrationTest` 8 项（活体 infra）+ sl-common 新增 8 项单测（准入/雪花），`make verify` 全仓 29 测全绿 + `scripts/accept-m1-06.sh` 活应用实测 21/21 通过；sharding.yaml 连接参数完成环境变量注入（§6 旧待办关闭） |
 
 ## 3. 实测数字与凭证
 
@@ -23,6 +24,7 @@
 |---|---|---|---|
 | 分片路由正确性（M1-02） | 单分片键查询不广播、跨键稳定落库 | ✅ 通过 | `sql-show` 输出：tenant 1001→ds1、1002→ds0；`SELECT WHERE tenant_id=1001` 仅 Actual ds1；`WHERE short_code='spike1001'` 仅 ds0；无分片键 `LIKE` 广播 ds0+ds1。测试 `ShardingRoutingVerificationTest` 断言物理库精确落点 |
 | 短码唯一性（M1-05） | 生成/租用全链路无重复 | ✅ 通过 | `ShortCodeGeneratorTest`：20 万样本撞码 <10、字符集/长度正则校验；`ShortCodePoolServiceTest`（活体 infra）：并发 20×50 租用后 Set 大小=1000（零重复）；`sql-show` 可见 pool 登记按 short_code 精确路由 ds0/ds1、租回写 UPDATE 双库各命中自身分片 |
+| 生成链路一致性（M1-06） | 三表+outbox+缓存一致、越权拒绝 | ✅ 通过 | `accept-m1-06.sh` 对活 sl-admin(8030) 21 项断言：创建 200+7 位码+short_url、双分片库求和后 short_link/code_tenant_index/outbox 各 1 行、route_json 与 `sl:r:{code}` 缓存一致（version 1）、evil.test/http→400 SL-4001、他租户 GET→403 SL-4030、自定义码冲突→409、保留字→400、PATCH 后缓存与 link_route version=2、同 Idempotency-Key 二次 POST 返回同一 code |
 | （待 M1-11 压测后回填） | | | |
 
 ## 4. 与设计的偏差及回写
@@ -40,6 +42,9 @@
 | M1-05 补池为同步执行 | 计划含异步补池；M1 池容量 5000、生成+PERSIST 实测 <1s，同步锁保护下无可用性痛点 | 先同步（SETNX 锁防并发重复补），异步化（定时任务/水位告警驱动）留 M2；DESIGN 无需改 |
 | M1-05 seen SET 无 TTL | 全局去重集合 `sl:pool:{ns}:seen` 单调增长，Redis 内存口径 DESIGN 未定义 | 个人项目规模可接受（7 位 Base62 池上限内、每码 7B）；若 M3 池扩张或命名空间增多再引入 Cuckoo filter 替代，届时回写 DESIGN 9.x |
 | M1-05 无内部 REST 端点 | 计划行提到"池管理接口"；M1 唯一消费方是 M1-06 生成 API（进程内调用），先开 REST 反而扩大鉴权面 | 保持 Spring service + 测试；M1-06 若管理看板需要再补带鉴权的内部端点 |
+| M1-06 origin_url 白名单来源 | DESIGN 9.2 口径是"备案域名白名单+人工审核"（DB 化），M1 无审核队列与备案表 | 走配置 `xsl.admission.allowed-hosts`（env 可覆盖，默认含 mock 域）；白名单 DB 化+审核队列留 M2，与 api_key 轮换同批 |
+| M1-06 验收直连 sl-admin | 8010/8011 被 argagent 占用是已知环境态；本任务要验的是生成语义而非签名链路（M1-04 已 7/7 验过网关） | `accept-m1-06.sh` 注入 X-Tenant-Id 直打 admin:8030；M1-10 nginx 就位后并入端到端 |
+| ShardingSphere 5.5.1 占位符语法两轮试错 | `$${VAR:::default}`+`;placeholder-type` 是旧文档口径：`:::` 会把默认值解析成空串（Port "" 报错）、`;` 分隔符不被 classpath URL 解析（resource 找不到 NPE） | 正确姿势：`$${VAR::default}` + `jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment`；已活体回归（路由/池/链路三套 SS 测试全绿） |
 
 ## 5. 本期决策记录
 
@@ -48,10 +53,12 @@
 - **M1-04 签名口径**：规范化串 `METHOD\npath\ntimestamp\nnonce\nsha256hex(body)`，HMAC-SHA256 hex；MVP 阶段 api_key 即共享密钥（DESIGN 9.4 的 key/secret 分离留到 M2 轮换机制一起做）。租户字典走 Redis `sl:tenant:api`（`make seed` 灌入），网关保持不依赖 MySQL——与管理面数据源隔离的原则从第一天成立。
 - **Reactor 陷阱记录**：网关过滤器成功链路 `chain.filter()` 返回 `Mono<Void>`（空完成），尾随 `switchIfEmpty(拒绝)` 会在放行后误触发写 401——表现为"合法签名也得 401"。修复用 `thenReturn(TRUE)` 哨兵隔离；单测补"成功路径不得设置响应状态"断言防回归。
 - **M1-05 池模型**：Redis List 为租用唯一活性来源（`LPOP count` 原子批量出池保证并发零重复），`short_code_pool` 表仅作登记账本（`INSERT IGNORE` + 租用状态回写），用于 Redis 数据丢失后按 status=0 重建池与审计；全局唯一性第一道防线是 seen SET（SADD 去重），表主键冲突是兜底。补水位阈值 `capacity×refill-ratio`，补池临界区用 SETNX 60s 锁串行化。
+- **M1-06 双分片轴写入口径**：short_link+outbox 同 tenant_id 分片轴 → 一个本地事务真原子；link_route+code_tenant_index 在 short_code 轴（另一库），主事务提交后同步补写——失败时 API 如实报错但 outbox(status=0) 留痕，M3 补偿重放收敛。跨轴不做 XA：与 DESIGN 8.4"outbox+最终一致"一致，M1 同步写只是把常态延迟降到 0。短码唯一性 = Redis SETNX(`sl:code:{code}`) 第一道 + index/route 主键兜底。
 - ~~（待定）M1-02 是否真用 Flyway~~ 已决，见上。
 
 ## 6. 下期待办与风险
 
-- M1-06 生成 API（`POST /api/v1/links`：https+域名白名单校验 → 事务写 short_link/link_route/code_tenant_index+outbox → Redis 路由缓存 → 返回短链）；M1-07 纯 302 跳转。
-- sharding.yaml 的 3307/root/xsl-dev 为单机开发硬编码，M1-06 接管数据源时改环境变量注入 + compose 内部主机名 `mysql:3306`（容器内免端口绕路）。
+- M1-07 纯 302 跳转（sl-jump `/s/{code}`：Caffeine→Redis→link_route 回源+空值标记防穿透→expire/status→302）；M1-08 归因参数透传。
+- sharding.yaml 环境变量注入已完成（`?placeholder-type=environment`）；容器内 profile 注入 `XSL_MYSQL_HOST=mysql` 留 M1-10 compose 化时接线。
+- 生成 API 尚未接 `xsl_base.tenant.quota_*` 配额校验（DESIGN 5.1 步骤 1）；与白名单 DB 化、outbox 补偿任务（`POST /internal/outbox/replay`）一并在 M2/M3 落地，M1 越权与一致性路径已按口径实现。
 - outbox.id 目前为分片内 AUTO_INCREMENT，跨分片不唯一——M3 outbox 实现时改 ShardingSphere key-generator(SNOWFLAKE) 或应用侧雪花。

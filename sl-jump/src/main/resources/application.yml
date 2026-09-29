@@ -8,11 +8,18 @@ spring:
     redis:
       host: ${XSL_REDIS_HOST:localhost}
       port: ${XSL_REDIS_PORT:6380}
-  cache:
-    type: caffeine
-    cache-names: route
-    caffeine:
-      spec: maximumSize=10000,expireAfterWrite=30s
+  datasource:
+    driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+    url: jdbc:shardingsphere:classpath:sharding-jump.yaml?placeholder-type=environment
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+xsl:
+  jump:
+    # M1 纯 302（DESIGN 第十章开关）；动态路由匹配实现留 JumpResolver 接口扩展位
+    mode: ${XSL_JUMP_MODE:direct302}
+    local-cache-size: ${XSL_JUMP_L1_SIZE:10000}
+    local-cache-ttl-seconds: ${XSL_JUMP_L1_TTL:30}
 
 management:
   endpoints:

@@ -3,6 +3,7 @@ package com.xingyan.shortlink.admin.link;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xingyan.shortlink.admin.pool.ShortCodePoolService;
+import com.xingyan.shortlink.common.route.RouteConfig;
 import com.xingyan.shortlink.common.admission.UrlAdmissionChecker;
 import com.xingyan.shortlink.common.error.ErrorCode;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
@@ -95,7 +96,7 @@ public class LinkService {
 
         String code = allocateCode(req.shortCode());
         long id = idGenerator.nextId();
-        RouteSnapshot snapshot = new RouteSnapshot(req.originUrl(), tenantId, redirectType,
+        RouteConfig snapshot = new RouteConfig(req.originUrl(), tenantId, redirectType,
                 req.expireTime(), req.accessLimit(), 0, 1);
         String routeJson = writeJson(snapshot);
 
@@ -163,7 +164,7 @@ public class LinkService {
         int status = req.status() != null ? req.status() : ((Number) current.get("status")).intValue();
 
         long version = nextRouteVersion(code);
-        RouteSnapshot snapshot = new RouteSnapshot((String) current.get("origin_url"), tenantId,
+        RouteConfig snapshot = new RouteConfig((String) current.get("origin_url"), tenantId,
                 ((Number) current.get("redirect_type")).intValue(), expireTime, accessLimit, status, version);
         String routeJson = writeJson(snapshot);
 
@@ -279,7 +280,7 @@ public class LinkService {
         return value == null ? null : ((Number) value).intValue();
     }
 
-    private String writeJson(RouteSnapshot snapshot) {
+    private String writeJson(RouteConfig snapshot) {
         try {
             return mapper.writeValueAsString(snapshot);
         } catch (JsonProcessingException e) {

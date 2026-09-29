@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # 应用未容器化前从宿主抓取；实例随 M1-07+ 逐个接入
+      - targets: ["host.docker.internal:8020", "host.docker.internal:8030"]
+        labels:
+          tier: app

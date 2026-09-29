@@ -9,7 +9,13 @@ COMPOSE := docker compose -f deploy/compose/docker-compose.yml
 SETTINGS := $(wildcard deploy/maven/settings-aliyun.xml)
 MVN := mvn -q $(if $(SETTINGS),-s $(SETTINGS),)
 
-.PHONY: print-java verify up down ps logs demo
+.PHONY: print-java verify up down ps logs demo db-init
+
+MYSQL_EXEC := $(COMPOSE) exec -T mysql mysql -uroot -pxsl-dev
+
+db-init:
+	$(MYSQL_EXEC) < deploy/compose/init/mysql/01-schema.sql
+	$(MYSQL_EXEC) -e "SELECT table_schema, COUNT(*) AS tables_count FROM information_schema.tables WHERE table_schema IN ('xsl_00','xsl_01','xsl_base') GROUP BY 1 ORDER BY 1;"
 
 verify:
 	$(MVN) verify

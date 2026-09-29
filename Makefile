@@ -9,13 +9,18 @@ COMPOSE := docker compose -f deploy/compose/docker-compose.yml
 SETTINGS := $(wildcard deploy/maven/settings-aliyun.xml)
 MVN := mvn -q $(if $(SETTINGS),-s $(SETTINGS),)
 
-.PHONY: print-java verify up down ps logs demo db-init
+.PHONY: print-java verify up down ps logs demo db-init seed
 
 MYSQL_EXEC := $(COMPOSE) exec -T mysql mysql -uroot -pxsl-dev
+REDIS_EXEC := $(COMPOSE) exec -T redis redis-cli
 
 db-init:
-	$(MYSQL_EXEC) < deploy/compose/init/mysql/01-schema.sql
-	$(MYSQL_EXEC) -e "SELECT table_schema, COUNT(*) AS tables_count FROM information_schema.tables WHERE table_schema IN ('xsl_00','xsl_01','xsl_base') GROUP BY 1 ORDER BY 1;"
+	@for f in deploy/compose/init/mysql/*.sql; do echo "--> $$f"; $(MYSQL_EXEC) < $$f; done
+	$(MYSQL_EXEC) -e "SELECT tenant_id, name FROM xsl_base.tenant ORDER BY tenant_id;"
+
+# 网关 HMAC 鉴权所需 api_key→tenant_id 字典（DESIGN 9.4；M3 改由 admin 变更后同步）
+seed:
+	$(REDIS_EXEC) HSET sl:tenant:api xy-key-alice-001 1001 xy-key-bob-002 1002 xy-key-carol-003 1003
 
 verify:
 	$(MVN) verify

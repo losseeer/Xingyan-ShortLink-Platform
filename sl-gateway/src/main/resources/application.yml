@@ -1,9 +1,25 @@
 server:
-  port: 8010
+  port: ${XSL_GATEWAY_PORT:8010}
 
 spring:
   application:
     name: sl-gateway
+  data:
+    redis:
+      host: ${XSL_REDIS_HOST:localhost}
+      port: ${XSL_REDIS_PORT:6380}
+  cloud:
+    gateway:
+      routes:
+        - id: admin-api
+          uri: http://${XSL_ADMIN_HOST:localhost}:${XSL_ADMIN_PORT:8030}
+          predicates:
+            - Path=/api/**
+        # /s/{code} → jump upstream：M1-10 接入（含 ×2 负载均衡），此处不抢先
+
+xsl:
+  auth:
+    enabled: true
 
 management:
   endpoints:

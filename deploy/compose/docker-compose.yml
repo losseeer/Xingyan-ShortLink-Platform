@@ -21,7 +21,9 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    ports: ["6379:6379"]
+    # 本机 Homebrew redis-server 占用 127.0.0.1:6379（与 mysqld 抢 3306 同类），
+    # 宿主侧直连走 6380；容器网络内其他服务仍用 redis:6379。
+    ports: ["6380:6379"]
     mem_limit: 512m
     volumes:
       - redis-data:/data

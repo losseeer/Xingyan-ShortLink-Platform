@@ -1,0 +1,16 @@
+server:
+  port: 8030
+
+spring:
+  application:
+    name: sl-admin
+  data:
+    redis:
+      host: ${XSL_REDIS_HOST:localhost}
+      port: 6379
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: sl-consumer
+  kafka:
+    bootstrap-servers: ${XSL_KAFKA_BOOTSTRAP:localhost:9094}
+    consumer:
+      group-id: sl-consumer
+      auto-offset-reset: earliest
+      enable-auto-commit: false

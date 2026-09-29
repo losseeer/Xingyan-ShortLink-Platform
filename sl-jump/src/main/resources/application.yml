@@ -1,0 +1,24 @@
+server:
+  port: 8020
+
+spring:
+  application:
+    name: sl-jump
+  data:
+    redis:
+      host: ${XSL_REDIS_HOST:localhost}
+      port: 6379
+  cache:
+    type: caffeine
+    cache-names: route
+    caffeine:
+      spec: maximumSize=10000,expireAfterWrite=30s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      instance: ${XSL_INSTANCE:local}

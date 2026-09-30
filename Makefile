@@ -47,8 +47,10 @@ logs:
 nginx-reload:
 	$(COMPOSE) exec -T nginx sh -c 'nginx -t && nginx -s reload'
 
+# 一键演示（M1-12）：up → 建库/seed → 签名创建 → 三域点击 → stats 出数，逐环打印证据。
+# 从零复现口径：先 `docker compose -f deploy/compose/docker-compose.yml down -v` 再 make demo。
 demo:
-	@echo "TODO M1-12: up -> seed -> create -> click -> stats 一键复现"
+	@bash scripts/demo.sh
 
 print-java:
 	@echo "JAVA_HOME=$(JAVA_HOME)"

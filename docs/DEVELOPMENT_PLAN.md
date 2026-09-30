@@ -50,5 +50,6 @@ outbox 同步器 + `version` 强校验通道｜归因回传 mock 宣发平台（
 - 版本钉选：Boot 3.3.x、ShardingSphere-JDBC 5.5.x（Boot3 兼容需开工首日验证，风险高则降为"双库手工路由 + 文档推演"，4.1 设计价值不受损）、Guava 33（Bloom）、Vavr 不引入。
 - 测试分层：sl-common 属性测试（jqwik）；服务层 Testcontainers（复用 compose 镜像）；E2E 用 bash 脚本存 `bench/e2e/`，`make demo` 即 M1-12 产物。
 - Commit 纪律：每任务一 squash 提交，附验收命令输出；里程碑 tag；`bench/reports/` 只增不改。
+- **回归纪律（M1-12 收口补，跨里程碑生效）**：凡改公共契约（跳转 Location、ClickEvent 字段、`route_json` 结构）的任务，收口前必须重跑受影响链路的全部旧验收脚本，并把复跑结果写进当期 ITER 的实测表。起因：M1-09 给 jump 接归因拼接后没重跑 M1-07，那条"Location 逐字符等于 origin_url"当场失效却仍以绿记录在册，直到 M1-10 容器化整套复跑才暴露（ITER-M1 §5）。
 - **迭代说明文档（硬性要求）**：每个里程碑收口必须产出一份 `docs/iterations/ITER-<里程碑>.md`（模板 `ITER-TEMPLATE.md`），内容含：本期做了什么/任务完成对照表（含砍掉与顺延项及原因）/实测数字与 `bench/` 凭证链接/对 DESIGN 的偏差与回写/下一期待办。**里程碑中途发生范围或设计变更时，先增改当期迭代文档再动代码**；文档与 tag 一起提交，缺一不算收口。
 - 当前仓库尚非 git 库：M1-00 第一步即 `git init`（属计划内动作，执行前不再另行确认）。

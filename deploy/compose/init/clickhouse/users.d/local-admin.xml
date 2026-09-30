@@ -1,0 +1,10 @@
+<clickhouse>
+  <!-- 只补一项权限、不改镜像里的 default-user.xml：给容器内的 default 用户开 access_management，
+       这样 `make ch-init` 才能执行 CREATE/ALTER USER + GRANT 建出应用账号 xsl_app。
+       default 仍被镜像限制为仅容器内回环可达（::1/127.0.0.1），且本文件不含任何口令。 -->
+  <users>
+    <default>
+      <access_management>1</access_management>
+    </default>
+  </users>
+</clickhouse>

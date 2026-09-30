@@ -10,3 +10,5 @@ data/
 wal/
 *.log
 .jqwik-database
+# 本机开发栈凭据：只入库 .env.example 模板，真实 .env 永不进仓库
+deploy/compose/.env

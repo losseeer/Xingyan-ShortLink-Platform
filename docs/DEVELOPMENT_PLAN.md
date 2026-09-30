@@ -52,4 +52,5 @@ outbox 同步器 + `version` 强校验通道｜归因回传 mock 宣发平台（
 - Commit 纪律：每任务一 squash 提交，附验收命令输出；里程碑 tag；`bench/reports/` 只增不改。
 - **回归纪律（M1-12 收口补，跨里程碑生效）**：凡改公共契约（跳转 Location、ClickEvent 字段、`route_json` 结构）的任务，收口前必须重跑受影响链路的全部旧验收脚本，并把复跑结果写进当期 ITER 的实测表。起因：M1-09 给 jump 接归因拼接后没重跑 M1-07，那条"Location 逐字符等于 origin_url"当场失效却仍以绿记录在册，直到 M1-10 容器化整套复跑才暴露（ITER-M1 §5）。
 - **迭代说明文档（硬性要求）**：每个里程碑收口必须产出一份 `docs/iterations/ITER-<里程碑>.md`（模板 `ITER-TEMPLATE.md`），内容含：本期做了什么/任务完成对照表（含砍掉与顺延项及原因）/实测数字与 `bench/` 凭证链接/对 DESIGN 的偏差与回写/下一期待办。**里程碑中途发生范围或设计变更时，先增改当期迭代文档再动代码**；文档与 tag 一起提交，缺一不算收口。
+- **凭据纪律（m1 收口补，跨里程碑生效）**：仓库内不得出现任何可用凭据的明文。开发栈口令一律放 `deploy/compose/.env`（gitignore，`make devenv` 生成），compose 用 `${VAR:?}` 强制注入、不给默认值；脚本经 `scripts/lib-devenv.sh` 取值，活体测试读环境变量（缺则跳过，绝不静默回落成别的口令）。中间件账号用幂等脚本在运行时建（`make ch-init`），不要写进只能落明文的配置文件（原 ClickHouse `users.d/xsl-app-user.xml` 因此撤下）。**例外**：`xy-key-alice-001` 这类 mock 租户 api_key 是设计内的演示密钥（DESIGN 9.4），不是环境凭据，留在 seed 里；等 M2 落地 key/secret 分离与轮换后再一并参数化。
 - 当前仓库尚非 git 库：M1-00 第一步即 `git init`（属计划内动作，执行前不再另行确认）。

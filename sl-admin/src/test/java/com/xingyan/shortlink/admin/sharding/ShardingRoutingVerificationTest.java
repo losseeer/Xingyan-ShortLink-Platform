@@ -25,6 +25,12 @@ class ShardingRoutingVerificationTest {
     private static final String SS_URL = "jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment";
     private static DataSource shardingDs;
 
+    /** 口令只从环境来（make verify 会 -include deploy/compose/.env 并 export）；缺失则探测失败、用例自动跳过 */
+    private static String mysqlPassword() {
+        String pw = System.getenv("XSL_MYSQL_PASSWORD");
+        return pw == null ? "" : pw;
+    }
+
     @BeforeAll
     static void up() throws SQLException {
         assumeTrue(mysqlReachable(), "本机 compose MySQL(127.0.0.1:3307) 不可达，跳过分片路由验证");
@@ -44,7 +50,7 @@ class ShardingRoutingVerificationTest {
 
     private static boolean mysqlReachable() {
         try (Connection c = DriverManager.getConnection(
-                "jdbc:mysql://127.0.0.1:3307/?useSSL=false&allowPublicKeyRetrieval=true", "root", "xsl-dev")) {
+                "jdbc:mysql://127.0.0.1:3307/?useSSL=false&allowPublicKeyRetrieval=true", "root", mysqlPassword())) {
             return c.isValid(2);
         } catch (Exception e) {
             System.err.println("[sharding-spike] MySQL 探测失败: " + e);
@@ -107,7 +113,7 @@ class ShardingRoutingVerificationTest {
 
     private static int physicalCount(String db, String table, String column, String value) throws SQLException {
         String url = "jdbc:mysql://127.0.0.1:3307/" + db + "?useSSL=false&allowPublicKeyRetrieval=true";
-        try (Connection conn = DriverManager.getConnection(url, "root", "xsl-dev");
+        try (Connection conn = DriverManager.getConnection(url, "root", mysqlPassword());
              Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + table + " WHERE " + column + "=" + value)) {
             return rs.next() ? rs.getInt(1) : 0;

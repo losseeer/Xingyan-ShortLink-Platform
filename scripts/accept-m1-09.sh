@@ -3,17 +3,16 @@
 # 创建→模拟点击 N=1000→CH count() FINAL 一致；Kafka 不可达期间点击→WAL 有记录→恢复重放后总数一致。
 # 前置：sl-admin(8030)/sl-jump(8020)/sl-consumer(8040) 已起，compose kafka/clickhouse 健康。
 set -uo pipefail
+source "$(dirname "$0")/lib-devenv.sh"   # 口令从 deploy/compose/.env 注入，脚本里不写明文
 ADMIN="${ADMIN:-http://localhost:8030}"
 JUMP="${JUMP:-http://localhost:8020}"
 STATS="${STATS:-http://localhost:8040}"
 CH='http://127.0.0.1:8123/'
-CH_CRED='xsl_app:xsl-dev'
 TENANT=1001
 N_MAIN=${N_MAIN:-1000}
 N_OUTAGE=${N_OUTAGE:-200}
 # M1-10 起 jump 容器化：WAL 落在 jump-1 的 bind mount 上（compose 文件同级的 data/ 目录），
 # 用脚本自身位置解析，避免从不同 cwd 调用时找不到目录。
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WAL_DIR="${WAL_DIR:-$REPO_ROOT/deploy/compose/data/jump-wal/jump-1}"
 KAFKA_CTR="${KAFKA_CTR:-xsl-kafka-1}"
 
@@ -87,11 +86,32 @@ SV=$(curl -s "$STATS/api/v1/stats/links/$CODE" | python3 -c "import json,sys;pri
 check "stats-api-consistent" "$EXPECTED" "$SV"
 
 # 7) Kafka 故障演练：pause broker→N_OUTAGE 击→WAL 出现记录→resume→重放→总数一致
+# WAL 落盘是异步的（spring-kafka 的投递回调里才 append，delivery.timeout 2s），
+# 而 15s 重放任务又会把在途文件整份摘走重发——所以"WAL 里有没有行"不是一个稳态量。
+# 之前只 sleep 4 后看一次，慢一点就误判成 0 行（收口后回归实测到偶发 FAIL，
+# 而同一轮的 final count 精确等于期望值，证明兜底与重放都是好的）。改成故障窗口内
+# 边打边采样、取峰值：断言的是"兜底曾接住多少条"，而不是"某个瞬间还剩多少条"。
 docker pause "$KAFKA_CTR" >/dev/null || { echo "FATAL pause"; exit 1; }
-clicks "$N_OUTAGE" outage
-sleep 4  # 等 delivery.timeout 回调落 WAL
-WAL_LINES=$(cat "$WAL_DIR"/click-event-*.log 2>/dev/null | wc -l | tr -d ' ')
-if [ "${WAL_LINES:-0}" -ge 1 ]; then echo "PASS wal-captured ($WAL_LINES lines)"; ((pass++)); else echo "FAIL wal-captured: dir=$WAL_DIR empty"; ((fail++)); fi
+clicks "$N_OUTAGE" outage &
+CLICK_JOB=$!
+WAL_PEAK=0
+while kill -0 "$CLICK_JOB" 2>/dev/null; do
+  n=$(cat "$WAL_DIR"/click-event-*.log 2>/dev/null | wc -l | tr -d ' ')
+  [[ "${n:-0}" -gt "$WAL_PEAK" ]] && WAL_PEAK=$n
+  sleep 1
+done
+wait "$CLICK_JOB"
+# 回调有 2s 投递超时，批次打完再补采样 8s，覆盖最后几条落盘
+for _ in $(seq 8); do
+  n=$(cat "$WAL_DIR"/click-event-*.log 2>/dev/null | wc -l | tr -d ' ')
+  [[ "${n:-0}" -gt "$WAL_PEAK" ]] && WAL_PEAK=$n
+  sleep 1
+done
+if [[ "$WAL_PEAK" -ge "$N_OUTAGE" ]]; then
+  echo "PASS wal-captured（故障窗口峰值 $WAL_PEAK 行 ≥ $N_OUTAGE 击，边打边采样）"; ((pass++))
+else
+  echo "FAIL wal-captured: 峰值仅 $WAL_PEAK/$N_OUTAGE 行，dir=$WAL_DIR"; ((fail++))
+fi
 # 故障期间跳转本身仍 302（不阻塞响应）
 check "jump-302-during-outage" 302 "$(curl -s -o /dev/null -w '%{http_code}' "$JUMP/s/$CODE")"
 docker unpause "$KAFKA_CTR" >/dev/null
@@ -115,7 +135,7 @@ echo "== $pass passed, $fail failed =="
 # 清理：CH 事件突变删除 + MySQL 三表 + Redis 缓存（jump 侧 WAL 保留最后记录供检查）
 ch "ALTER TABLE xsl.click_event DELETE WHERE short_code = '$CODE'" >/dev/null
 for DB in xsl_00 xsl_01; do
-  docker exec xsl-mysql-1 mysql -uroot -pxsl-dev "$DB" -e \
+  $MYSQL_EXEC -uroot "$DB" -e \
     "DELETE FROM short_link WHERE short_code='$CODE'; DELETE FROM link_route WHERE short_code='$CODE'; DELETE FROM code_tenant_index WHERE short_code='$CODE'; DELETE FROM short_code_pool WHERE short_code='$CODE'; DELETE FROM outbox WHERE entity_id='$CODE';" 2>/dev/null
 done
 docker exec xsl-redis-1 redis-cli DEL "sl:r:$CODE" "sl:r:nx:$CODE" "sl:code:$CODE" "sl:cnt:$CODE" >/dev/null

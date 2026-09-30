@@ -3,17 +3,19 @@ name: xsl
 # 容器网络内的中间件地址（宿主默认值写在各自 application.yml 的 ${VAR:default} 里）。
 # 四个应用共用同一份环境变量命名空间：每个服务只读自己用到的键，多余注入不影响行为，
 # 换来的是 compose 里少四处近似重复、且 `make demo` 一条 env 改址即可整体迁移。
+# 口令一律从 deploy/compose/.env 注入（该文件不入库，模板见 .env.example）：
+# compose 在项目目录（= 本文件所在目录）自动读 .env，`:?` 让缺失时立刻报错而不是带空串起栈。
 x-app-env: &app-env
   XSL_MYSQL_HOST: mysql
   XSL_MYSQL_PORT: "3306"
   XSL_MYSQL_USER: root
-  XSL_MYSQL_PASSWORD: xsl-dev
+  XSL_MYSQL_PASSWORD: ${XSL_MYSQL_PASSWORD:?缺少 XSL_MYSQL_PASSWORD，请 cp deploy/compose/.env.example deploy/compose/.env}
   XSL_REDIS_HOST: redis
   XSL_REDIS_PORT: "6379"
   XSL_KAFKA_BOOTSTRAP: kafka:9092
   XSL_CH_URL: http://clickhouse:8123/
   XSL_CH_USER: xsl_app
-  XSL_CH_PASSWORD: xsl-dev
+  XSL_CH_PASSWORD: ${XSL_CH_PASSWORD:?缺少 XSL_CH_PASSWORD，请见 deploy/compose/.env.example}
 
 services:
 
@@ -23,13 +25,14 @@ services:
     # 故宿主侧走 3307；容器网络内其他服务仍用 mysql:3306。
     ports: ["3307:3306"]
     environment:
-      MYSQL_ROOT_PASSWORD: xsl-dev
+      MYSQL_ROOT_PASSWORD: ${XSL_MYSQL_PASSWORD:?缺少 XSL_MYSQL_PASSWORD，见 deploy/compose/.env.example}
     volumes:
       - mysql-data:/var/lib/mysql
       - ./init/mysql:/docker-entrypoint-initdb.d:ro
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pxsl-dev"]
+      # 口令从容器自己的 env 取（MYSQL_ROOT_PASSWORD），命令行与文件里都不落明文
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\""]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -93,8 +96,11 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
-      # 宿主侧应用访问 8123 需要专用账号（default 用户带口令走 HTTP 在 24.8 下不稳定）
-      - ./init/clickhouse/users.d/xsl-app-user.xml:/etc/clickhouse-server/users.d/xsl-app-user.xml:ro
+      # 给容器内 default 用户开 access_management，否则 `make ch-init` 的 CREATE/GRANT 会被拒
+      - ./init/clickhouse/users.d/local-admin.xml:/etc/clickhouse-server/users.d/local-admin.xml:ro
+      # 应用账号 xsl_app 不写进 users.d XML —— 那种文件只能落明文口令，一入库就等于泄露。
+      # 改由 `make ch-init`（scripts/init-ch-user.sh）用 CREATE/ALTER USER + GRANT 建号，
+      # 口令运行时从 deploy/compose/.env 经 SQL 进容器；全新卷与已有卷走同一条路径。
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null"]
       interval: 5s
@@ -224,7 +230,7 @@ services:
     profiles: ["observability"]
     ports: ["3000:3000"]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: xsl-dev
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?缺少 GRAFANA_PASSWORD，见 deploy/compose/.env.example}
 
   # ---- 可选：--profile redis-ha（主从复制 + Sentinel 故障转移语义演示，M2 后启用）----
   # 1 主 2 从 + 3 Sentinel，全部同宿主机，仅演示语义（DESIGN 3.3 诚实口径），暂为占位。

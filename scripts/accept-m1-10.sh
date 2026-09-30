@@ -8,11 +8,11 @@
 # 前置：scripts/build-images.sh 已出镜像且 docker compose up -d 已拉起。
 # 口径：不改宿主 /etc/hosts，全部用 curl --resolve 打到 127.0.0.1:80，由 nginx 按 server_name 分流。
 set -uo pipefail
+source "$(dirname "$0")/lib-devenv.sh"   # 口令从 deploy/compose/.env 注入，脚本里不写明文
 IP="${NGINX_ENTRY_IP:-127.0.0.1}"
 PORT="${NGINX_PORT:-80}"
 DOMAINS=(xy1.test xy2.test xy3.test)
 ADMIN_DIRECT="${ADMIN_DIRECT:-http://localhost:8030}"
-COMPOSE="docker compose -f deploy/compose/docker-compose.yml"
 J1=xsl-jump-1-1
 J2=xsl-jump-2-1
 TENANT=1001
@@ -146,7 +146,7 @@ check "E3 restart:always 生效（restart 策略非 no）" "always" \
 cleanup() {
   [[ -z "${CODE:-}" ]] && return 0
   for db in xsl_00 xsl_01; do
-    docker exec xsl-mysql-1 mysql -N -uroot -pxsl-dev "$db" -e \
+    $MYSQL_EXEC -N -uroot "$db" -e \
       "DELETE FROM link_route WHERE short_code='$CODE';
        DELETE FROM code_tenant_index WHERE short_code='$CODE';
        DELETE FROM short_link WHERE short_code='$CODE';
@@ -154,7 +154,7 @@ cleanup() {
        DELETE FROM outbox WHERE entity_id='$CODE';" >/dev/null 2>&1
   done
   docker exec xsl-redis-1 redis-cli DEL "sl:r:$CODE" "sl:r:nx:$CODE" "sl:cnt:$CODE" "sl:code:$CODE" >/dev/null 2>&1
-  curl -s -m 20 -u xsl_app:xsl-dev 'http://127.0.0.1:8123/' \
+  curl -s -m 20 -u "$CH_CRED" 'http://127.0.0.1:8123/' \
     --data-binary "ALTER TABLE xsl.click_event DELETE WHERE short_code='$CODE'" >/dev/null 2>&1
   rm -f /tmp/xsl-m110-load-*.txt /tmp/xsl-m110-load.txt
   note "cleanup: fixture $CODE 与压测事件已删除"

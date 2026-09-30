@@ -3,9 +3,9 @@
 # 冷码回源后二查命中缓存（metrics xsl_jump_route_lookup_total{level="db"} 不再增长佐证）。
 # 口径：直连 sl-jump:8020（/s/**→jump 的 nginx 接线在 M1-10）；fixture 直插物理分片。
 set -uo pipefail
+source "$(dirname "$0")/lib-devenv.sh"   # 口令从 deploy/compose/.env 注入，脚本里不写明文
 JUMP="${JUMP:-http://localhost:8020}"
-COMPOSE="docker compose -f deploy/compose/docker-compose.yml"
-MYSQL="$COMPOSE exec -T mysql mysql -N -uroot -pxsl-dev"
+MYSQL="$MYSQL_EXEC -N -uroot"
 RCLI="$COMPOSE exec -T redis redis-cli"
 ORIGIN="https://mock.ticketsales.test/e2e-m107"
 RUN=$(python3 -c 'import time;print(int(time.time()*1000))')

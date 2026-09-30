@@ -7,8 +7,8 @@
 #   docker compose -f deploy/compose/docker-compose.yml down -v && make demo
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE="docker compose -f $REPO_ROOT/deploy/compose/docker-compose.yml"
+# 口令与 compose 位置由 lib-devenv.sh 从 deploy/compose/.env 装载（缺文件会直接报错并给出修复命令）
+source "$(dirname "$0")/lib-devenv.sh"
 NGINX_IP="${NGINX_IP:-127.0.0.1}"
 NGINX_PORT="${NGINX_PORT:-80}"
 API_KEY="${API_KEY:-xy-key-alice-001}"   # M1 口径：api_key 同时是 HMAC 共享密钥（DESIGN 9.4 的 key/secret 分离留 M2）
@@ -31,19 +31,23 @@ done
 echo "OK docker 可用，四个应用镜像就位"
 
 # ================= 1. 起全栈 =================
-step "1. docker compose up -d --wait（十个容器全部 healthy）"
-$COMPOSE up -d --wait || { echo "up --wait 超时，看 $COMPOSE ps 与 make logs"; exit 1; }
+step "1. 起全栈（十个容器全部 healthy）"
+# 与 make up 同款两段式：kafka-init 是一次性容器，同一次调用里启动即退出会被 --wait 判为失败
+DAEMON_SERVICES="mysql redis kafka clickhouse gateway admin jump-1 jump-2 consumer nginx"
+$COMPOSE up -d >/dev/null || { echo "compose up 失败，看 make logs"; exit 1; }
+$COMPOSE up -d --wait $DAEMON_SERVICES || { echo "up --wait 超时，看 $COMPOSE ps 与 make logs"; exit 1; }
 $COMPOSE ps --format 'table {{.Service}}\t{{.Status}}'
 
 # ================= 2. 数据面就位：建库 + 租户字典 =================
 # 全新数据卷由 mysql 镜像 entrypoint 自动执行 init/mysql/*.sql；已有卷则靠幂等脚本补建。
 step "2. 建库（幂等）+ 租户 api_key 字典 seed"
 for f in "$REPO_ROOT"/deploy/compose/init/mysql/*.sql; do
-  $COMPOSE exec -T mysql mysql -uroot -pxsl-dev < "$f" >/dev/null || { echo "schema 初始化失败：$f"; exit 1; }
+  $MYSQL_EXEC -uroot < "$f" >/dev/null || { echo "schema 初始化失败：$f"; exit 1; }
 done
 $COMPOSE exec -T redis redis-cli HSET sl:tenant:api "$API_KEY" 1001 \
   xy-key-bob-002 1002 xy-key-carol-003 1003 >/dev/null
-echo "OK schema 可重放、sl:tenant:api 已就位"
+bash "$LIB_DIR/init-ch-user.sh" >/dev/null || { echo "ClickHouse 账号初始化失败"; exit 1; }
+echo "OK schema 可重放、xsl_app 账号就位、sl:tenant:api 已灌入"
 
 # 入口健康：nginx 只在启动时解析数据面 upstream 容器名，故 up 之后它就是可用的
 for _ in $(seq 15); do
@@ -120,7 +124,8 @@ cat <<EOT
 链路三环全部走通：签名创建 → 三域 302 归因 → 看板出数。
 接下来可以手动复看：
   · 跳转明细（含 xy_click_id 与归因参数）：curl $(resolve xy1.test) -i $(host_url xy1.test)/$CODE
-  · 直查 ClickHouse：curl -u xsl_app:xsl-dev 'http://127.0.0.1:8123/' --data-binary \\
+  · 直查 ClickHouse（先 source scripts/lib-devenv.sh 拿到 \$CH_CRED，口令不进 shell 历史）：
+      curl -u "\$CH_CRED" 'http://127.0.0.1:8123/' --data-binary \\
       "SELECT count() FROM xsl.click_event FINAL WHERE short_code='$CODE'"
   · 数据面多实例承载与轮询证据：make logs（nginx route 日志里的 \$upstream_addr）
   · 滚动重启零中断：docker restart xsl-jump-1-1 期间持续点击（scripts/accept-m1-10.sh 已把这段做成断言）

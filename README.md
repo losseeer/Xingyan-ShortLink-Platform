@@ -35,19 +35,32 @@
 
 - **JDK 21（或 17+）用于构建**：macOS 上系统默认 `java` 若是 JDK 8，`make verify` / `make images` 会自动解析 keg-only 的 `openjdk@21`（`JAVA21_CASK`，见 [Makefile](Makefile) 顶部），编译 target 仍是 17。
 - **Docker Desktop 已启动**：守护进程不会随系统自启，先 `open -a Docker`，`docker info` 通过再往下走。
+- **凭据**：`make devenv` 生成 `deploy/compose/.env`（随机口令、0600、已被 `.gitignore` 排除）。仓库里不含任何口令——compose 用 `${VAR:?}` 强制注入，`scripts/*.sh` 经 `scripts/lib-devenv.sh` 取值，活体测试读环境变量（缺变量则自动跳过）。模板见 [deploy/compose/.env.example](deploy/compose/.env.example)。
 - **宿主端口**：本机若已有服务占用标准端口，compose 的偏移已固化——MySQL 走宿主 **3307**、Redis 走 **6380**、网关走 **8110**（容器网络内仍是 `mysql:3306`/`redis:6379`/`gateway:8010`）。
 
 ## 快速开始
 
 ```bash
+make devenv     # 生成 deploy/compose/.env（已存在则不覆盖）
 make verify     # 全仓单元 + 活体集成测试（需 Docker 已起，MySQL 3307 / Redis 6380）
 make images     # 宿主 mvn package 产物 + JRE 一层 → xsl/{gateway,admin,jump,consumer}:dev
 make up         # docker compose up -d --wait，十个容器全部 healthy
+make db-init    # MySQL schema 幂等重放（全新数据卷由镜像 entrypoint 自动执行）
+make ch-init    # ClickHouse 应用账号 xsl_app（口令从 .env 经 SQL 写入，不落仓库）
 make seed       # 灌网关鉴权所需 api_key → tenant 字典
-make demo       # 一键演示，见下节
+make demo       # 一键演示，见下节（内部已含 db-init/ch-init/seed）
 ```
 
-其他入口：`make ps` / `make logs` / `make down` / `make db-init`（数据卷已存在时幂等补建 schema）/ `make nginx-reload`（单独 `--force-recreate` 某个 jump 换 IP 后优雅重载）。
+其他入口：`make ps` / `make logs` / `make down` / `make nginx-reload`（单独 `--force-recreate` 某个 jump 换 IP 后优雅重载）。
+
+轮换口令的顺序有讲究——只改 `.env` 不会改数据卷里的真实账号：
+
+```bash
+# 1) 编辑 .env（或删掉重跑 make devenv 生成一套新值）
+XSL_MYSQL_PASSWORD_OLD=<旧口令> make mysql-rotate   # 把 MySQL root 账号改成 .env 里的新值
+make ch-init                                        # ClickHouse 账号同步（CREATE 后 ALTER，幂等）
+make up                                             # 容器 env 与 healthcheck 用上新值
+```
 
 ## 一键演示
 

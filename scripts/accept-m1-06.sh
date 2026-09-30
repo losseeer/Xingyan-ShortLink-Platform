@@ -3,9 +3,10 @@
 # 口径：直连 sl-admin:8030 并注入 X-Tenant-Id（模拟网关放行后的头部）；
 #       HMAC 全链路已由 accept-m1-04.sh 在网关上验证，M1-10/12 起本脚本并入全链路。
 set -uo pipefail
+source "$(dirname "$0")/lib-devenv.sh"   # 口令从 deploy/compose/.env 注入，脚本里不写明文
 ADMIN="${ADMIN:-http://localhost:8030}"
-MYSQL="docker compose -f deploy/compose/docker-compose.yml exec -T mysql mysql -N -uroot -pxsl-dev"
-RCLI="docker compose -f deploy/compose/docker-compose.yml exec -T redis redis-cli"
+MYSQL="$MYSQL_EXEC -N -uroot"
+RCLI="$COMPOSE exec -T redis redis-cli"
 TA="1001"; TB="1002"
 RUN=$(python3 -c 'import time;print(int(time.time()*1000))')
 CODES=()

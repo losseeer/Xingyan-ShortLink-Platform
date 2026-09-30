@@ -40,7 +40,8 @@ class ClickPipelineLiveTest {
     @BeforeAll
     static void up() {
         assumeTrue(infraUp());
-        ch = new ClickHouseWriter("http://localhost:8123/", "xsl_app", "xsl-dev", "xsl");
+        ch = new ClickHouseWriter("http://localhost:8123/", "xsl_app",
+                System.getenv().getOrDefault("XSL_CH_PASSWORD", ""), "xsl");
     }
 
     @AfterAll

@@ -26,7 +26,7 @@ xsl:
     url: ${XSL_CH_URL:http://localhost:8123/}
     # 专用账号（deploy/compose/init/clickhouse/users.d/xsl-app-user.xml），default 用户仅限容器内
     user: ${XSL_CH_USER:xsl_app}
-    password: ${XSL_CH_PASSWORD:xsl-dev}
+    password: ${XSL_CH_PASSWORD}
     database: ${XSL_CH_DB:xsl}
 
 management:

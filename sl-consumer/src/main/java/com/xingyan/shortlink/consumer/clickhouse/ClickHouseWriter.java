@@ -40,7 +40,7 @@ public class ClickHouseWriter {
 
     public ClickHouseWriter(@Value("${xsl.ch.url:http://localhost:8123/}") String url,
                             @Value("${xsl.ch.user:xsl_app}") String user,
-                            @Value("${xsl.ch.password:xsl-dev}") String password,
+                            @Value("${xsl.ch.password}") String password,
                             @Value("${xsl.ch.database:xsl}") String database) {
         this.url = url;
         this.auth = "Basic " + java.util.Base64.getEncoder().encodeToString(

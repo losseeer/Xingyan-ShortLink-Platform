@@ -78,6 +78,8 @@ services:
     volumes:
       - clickhouse-data:/var/lib/clickhouse
       - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
+      # 宿主侧应用访问 8123 需要专用账号（default 用户带口令走 HTTP 在 24.8 下不稳定）
+      - ./init/clickhouse/users.d/xsl-app-user.xml:/etc/clickhouse-server/users.d/xsl-app-user.xml:ro
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' >/dev/null"]
       interval: 5s

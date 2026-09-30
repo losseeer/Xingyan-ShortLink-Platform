@@ -13,5 +13,8 @@ public record RouteConfig(
         LocalDateTime expireTime,
         Integer accessLimit,
         int status,
-        long version) {
+        long version,
+        String channelId,
+        String campaignId,
+        String promoterId) {
 }

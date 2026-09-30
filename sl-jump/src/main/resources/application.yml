@@ -13,6 +13,15 @@ spring:
     url: jdbc:shardingsphere:classpath:sharding-jump.yaml?placeholder-type=environment
   jackson:
     property-naming-strategy: SNAKE_CASE
+  kafka:
+    bootstrap-servers: ${XSL_KAFKA_BOOTSTRAP:localhost:9094}
+    producer:
+      # M1 本机口径：短超时让故障快速转 WAL；acks=all + 重试由 M1-11 压测调参
+      acks: all
+      properties:
+        delivery.timeout.ms: 2000
+        request.timeout.ms: 1500
+        max.block.ms: 1000
 
 xsl:
   jump:
@@ -20,6 +29,10 @@ xsl:
     mode: ${XSL_JUMP_MODE:direct302}
     local-cache-size: ${XSL_JUMP_L1_SIZE:10000}
     local-cache-ttl-seconds: ${XSL_JUMP_L1_TTL:30}
+    click-topic: ${XSL_CLICK_TOPIC:shortlink-click}
+    wal-dir: ${XSL_JUMP_WAL_DIR:./data/jump-wal}
+    wal-replay-ms: ${XSL_JUMP_WAL_REPLAY_MS:15000}
+    ip-salt: ${XSL_IP_SALT:local-dev-salt}
 
 management:
   endpoints:

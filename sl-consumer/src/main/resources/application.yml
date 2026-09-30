@@ -1,3 +1,6 @@
+server:
+  port: 8040
+
 spring:
   application:
     name: sl-consumer
@@ -7,3 +10,27 @@ spring:
       group-id: sl-consumer
       auto-offset-reset: earliest
       enable-auto-commit: false
+      max-poll-records: ${XSL_CH_BATCH_SIZE:500}
+      properties:
+        fetch.max.wait.ms: 2000
+    listener:
+      ack-mode: manual_immediate
+      type: batch
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+xsl:
+  stats:
+    click-topic: ${XSL_CLICK_TOPIC:shortlink-click}
+  ch:
+    url: ${XSL_CH_URL:http://localhost:8123/}
+    # 专用账号（deploy/compose/init/clickhouse/users.d/xsl-app-user.xml），default 用户仅限容器内
+    user: ${XSL_CH_USER:xsl_app}
+    password: ${XSL_CH_PASSWORD:xsl-dev}
+    database: ${XSL_CH_DB:xsl}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

@@ -19,6 +19,7 @@
 | M1-06 生成 API | ✅ | `POST/GET/PATCH /api/v1/links`：https+域名白名单准入、自定义码保留字/冲突校验（SETNX+DB 双防线）、short_link+outbox 同事务写、link_route+code_tenant_index 提交后同步、Redis `sl:r:{code}` 缓存 24h+rand、PATCH 合并语义+version 递增、code_tenant_index 越权 403；`LinkServiceIntegrationTest` 8 项（活体 infra）+ sl-common 新增 8 项单测（准入/雪花），`make verify` 全仓 41 测全绿 + `scripts/accept-m1-06.sh` 活应用实测 21/21 通过；sharding.yaml 连接参数完成环境变量注入（§6 旧待办关闭） |
 | M1-07 跳转服务（纯 302） | ✅ | sl-jump `GET /s/{code}` 与裸 `/{code}`：Caffeine(L1,30s)→Redis(L2)→link_route 回源(L3) 三级读、空值标记 `sl:r:nx:{code}` 防穿透、Lua version 比较防旧值写回覆盖、status/expire/access_limit(Lua 原子扣减)检查→302；`JumpResolver` 接口即 DESIGN 第十章"纯 302 开关"扩展位；单测 6+活体集成 3，`make verify` 全仓 50 测全绿；`scripts/accept-m1-07.sh` 对活 jump(8020) 14/14 通过（302·404+标记·403·410 过期·410 超限·二查 db 计数不增） |
 | M1-08 归因参数透传 | ✅ | sl-common `AttributionParamMerger`：白名单=附录 B 契约（channel_id/campaign_id/promoter_id/utm_*），`&/?` 续接（悬空 `?` 复用）、追加段插在 `#` fragment 之前、值按 RFC 3986 unreserved 严格 URL-encode、禁覆盖目标原有参数（含白名单键，编码形态键 `%6E` 亦可识别）、`xy_click_id`（c+雪花）由模块生成且拒绝外部传入、`trace_id` 随 Result 返回但不入 URL；jqwik 属性测试 3 性质（400/300/200 例）+ 确定性单测 9 项，`make verify` 全仓 62 测全绿 |
+| M1-09 ClickEvent 链路 | ✅ | 归因字段（channel/campaign/promoter）进 `RouteConfig` 快照→jump `Direct302Resolver` 接线 M1-08 拼接器（302 Location=目标 URL+白名单参数，utm_* 从短链请求 query 透传）；ClickEvent（sl-common DTO，event_id=UUID 幂等键、IP 加盐 SHA-256 脱敏）经 spring-kafka 异步投递 `shortlink-click`（分区键 short_code），失败落按天 JSONL WAL、15s 定时重放（DESIGN 8.3 Kafka 挂预案）；sl-consumer 批量监听+手动 ack→CH 原生 HTTP JSONEachRow 写入（零驱动依赖，3 连试不提交）+`GET /api/v1/stats/links/{code}`（count FINAL 直查）；`make verify` 全仓 63 测全绿（含 consumer 活体链路测试：重复投递去重后 FINAL 恰 2）；`scripts/accept-m1-09.sh` 14/14：1000+3 击 2s 内 CH 可见、stats 一致、pause kafka 期间 201 击 WAL 有记录且跳转仍 302、unpause 重放后总数 1204=期望、WAL 清零 |
 
 ## 3. 实测数字与凭证
 
@@ -29,6 +30,7 @@
 | 生成链路一致性（M1-06） | 三表+outbox+缓存一致、越权拒绝 | ✅ 通过 | `accept-m1-06.sh` 对活 sl-admin(8030) 21 项断言：创建 200+7 位码+short_url、双分片库求和后 short_link/code_tenant_index/outbox 各 1 行、route_json 与 `sl:r:{code}` 缓存一致（version 1）、evil.test/http→400 SL-4001、他租户 GET→403 SL-4030、自定义码冲突→409、保留字→400、PATCH 后缓存与 link_route version=2、同 Idempotency-Key 二次 POST 返回同一 code |
 | 跳转正确性与缓存层级（M1-07） | 302/404/403/410 语义 + 冷码回源二查命中缓存 | ✅ 通过 | `accept-m1-07.sh` 对活 sl-jump(8020) 14 项断言：正常码 302 且 Location=origin_url（`/s/` 与裸路径同义）；不存在码 404 且 `sl:r:nx:` 标记生成；status=1→403；过期→410；access_limit=2 第 3 击→410；冷码首查后 `xsl_jump_route_lookup_total{level="db"}` 1.0→2.0、二查保持 2.0 不增（指标计数佐证回源仅一次），`sl:r:{code}` 写回存在 |
 | 归因拼接健壮性（M1-08） | 任意 query/编码/`#` 片段下结果可被 `java.net.URI` 解析且原参数逐字节无损；注入值不改语义 | ✅ 通过 | `AttributionParamMergerPropertyTest` 3 性质（tries 400/300/200）：生成 URL 覆盖 空/悬空`?`/多参/尾`&`/编码片段/任意 fragment 六形态，断言原 query 前缀逐字节保留、fragment 原样、追加对数=Result.appended 数；注入样本（`a&b=1`、`%26evil=1`、`x#y`、中文、200 字符长串）后追加段恒为 2 对且解码还原原值；`surefire-reports`：PropertyTest `Tests run: 3, Failures: 0`，确定性 `Tests run: 9, Failures: 0` |
+| ClickEvent 端到端一致性与丢失率首证（M1-09） | 创建→1000 击→CH `count() FINAL` 一致；Kafka 不可达期间 WAL 有记录、恢复重放后总数一致（丢失率 <0.01% 口径） | ✅ 通过 | `accept-m1-09.sh` 14 项断言（活体 admin/jump/consumer+kafka+CH）：批量 1000+3 击后 `xsl.click_event FINAL` =1003、端到端可见延迟 2s（目标 <60s）；`/api/v1/stats/links/{code}` =1003 与 CH 一致；`docker pause xsl-kafka-1` 期间 201 击 WAL 落盘 200+ 行且跳转仍 302（不阻塞）；`docker unpause` 重放后 FINAL=1204 恰等于期望值（0 丢失，重复由 event_id 幂等消化）、WAL 清零。活体测试 `ClickPipelineLiveTest`：同 event_id 双投递 FINAL 恰 2 |
 | （待 M1-11 压测后回填） | | | |
 
 ## 4. 与设计的偏差及回写
@@ -54,6 +56,10 @@
 | M1-07 验收直连 sl-jump:8020 | nginx `/s/**`→jump upstream 属 M1-10 交付 | 脚本对 jump 裸实例断言语义；M1-10 起并入 nginx+多实例链路 |
 | M1-08 只交付纯函数模块，jump 尚未调用 | DESIGN 5.2 的拼接点在跳转链路，但归因值（channel/campaign/promoter）此时只存在于 short_link 行，RouteConfig 未携带，且 M1-09 ClickEvent 才是消费方 | 模块+属性测试先行收口验收口径；M1-09 把归因字段并入 route_json/ClickEvent 时在 Direct302Resolver 接线（Location=merge 结果） |
 | M1-08 `trace_id` 不追加到 URL | 计划行写"生成 xy_click_id + trace_id"，但附录 B 跳转参数契约不含 trace_id，追加即违反"只允许白名单参数" | trace_id 经 `Result.traceId()` 返回，随 M1-09 ClickEvent/日志贯通（DESIGN 8.5 口径），URL 保持最小契约 |
+| M1-09 ClickHouse 宿主侧访问需专用账号 | 镜像 entrypoint 把 default 用户锁在容器内回环；宿主连接经 Docker Desktop VM NAT，源 IP 不固定（ip_range 白名单全部不命中），且只读 bind mount 下 users.d 热重载不生效 | 新增 `xsl_app/xsl-dev` 账号（users.d/xsl-app-user.xml，::/0+口令口径：8123 只发布在宿主回环，边界=端口不出机器+口令），改文件后需 `compose up -d` 重建生效；DESIGN 无需改（部署细节） |
+| M1-09 事件字段 M1 简化 | DESIGN 6.3/4.2 含 UA 容器识别、IP 地理、风控评分 | device/os/province/city 空串、risk_score/is_bot=0 入表（列已就位），UA 解析属 M2 动态路由、风控属 M2/M3，届时只是填充值不改链路 |
+| M1-09 WAL 简化为整文件摘取 | 严格逐行确认需写入偏移/重试行号管理 | 重放=同步摘取删除整文件→逐条 send，再失败由回调重新 append；崩溃在重放中途可能重复投递（at-least-once+event_id 幂等覆盖，与 DESIGN 口径一致）；逐行水位留 M2 与 outbox 补偿一起做 |
+| M1-09 stats 落点 sl-consumer | 计划未指定模块；看板查询统一走 CH（DESIGN 6.4），与管理面 MySQL 隔离 | consumer 起 web 端口 8040 提供 `GET /api/v1/stats/links/{code}`；M1-10 nginx 路由 `/stats/**` 时接线；鉴权（租户越权查询）留 M2 与配额一起 |
 
 ## 5. 本期决策记录
 
@@ -65,11 +71,12 @@
 - **M1-06 双分片轴写入口径**：short_link+outbox 同 tenant_id 分片轴 → 一个本地事务真原子；link_route+code_tenant_index 在 short_code 轴（另一库），主事务提交后同步补写——失败时 API 如实报错但 outbox(status=0) 留痕，M3 补偿重放收敛。跨轴不做 XA：与 DESIGN 8.4"outbox+最终一致"一致，M1 同步写只是把常态延迟降到 0。短码唯一性 = Redis SETNX(`sl:code:{code}`) 第一道 + index/route 主键兜底。
 - **M1-07 三级读与负反馈**：L1 Caffeine(30s) 含空结果缓存（新建链接最长 30s 内可能仍 404，个人项目口径可接受，M2 可加 admin→jump 广播失效）；L2 Redis 命中直路；L3 回源后 Lua `version 比较`写回防旧覆盖新（DESIGN 8.4 缓存回写口径落地）。access_limit 扣减用 Lua（首次以配额初始化→DECR），返回 -1 判超限；与 DB 定期对账留 M2。`JumpResolver` 接口 + `xsl.jump.mode=direct302` 即 DESIGN 第十章纯 302 开关。
 - **M1-08 拼接语义**：以"追加段插在首个 `#` 之前"为规范（query 注入止于 fragment 边界）；禁覆盖判定同时匹配原文与百分号解码后的键，防 `%6E` 变形绕过；`xy_click_id` 只信模块生成（attrs 中同名键丢弃）；编码采用 RFC 3986 unreserved 白名单而非 `URLEncoder`（后者把空格编成 `+`、保留 `*`，与 query 语义混叠）。jqwik 作为 test-only 依赖进 sl-common，不污染运行时。
+- **M1-09 事件链路口径**：ClickEvent 幂等键=event_id(UUID v4)，Kafka at-least-once+CH ReplacingMergeTree 读时 FINAL 去重（验证脚本以 FINAL 计数为准）；WAL 兜底为按天 JSONL、`pendingFiles/take/append` 全部同步互斥，重放由 15s 定时+启动触发；IP 只落加盐 SHA-256 前 16 位（DESIGN 8.5 脱敏）；CH 写入走原生 HTTP JSONEachRow（宿主侧零 JDBC 依赖，容器内换 `http://clickhouse:8123` 同一实现）；归因三字段进 route_json 快照而非回查 short_link（保持 jump 只读单表、跨分片轴零额外查询）。
 - ~~（待定）M1-02 是否真用 Flyway~~ 已决，见上。
 
 ## 6. 下期待办与风险
 
-- M1-09 ClickEvent 链路（jump 异步 Kafka+WAL、consumer→CH、`GET /stats/links/{code}`）；归因字段进 route_json 后在 Direct302Resolver 接线 `AttributionParamMerger`（M1-08 遗留集成点）。M1-10 nginx+jump×2 多域名。
+- M1-10 nginx+jump×2 多域名：`/s/**`→jump upstream、`/api/**`→admin、`/stats/**`→consumer；compose 容器内 profile 注入 `XSL_MYSQL_HOST=mysql`、`XSL_REDIS_HOST=redis`、`XSL_KAFKA_BOOTSTRAP=kafka:9092`、`XSL_CH_URL=http://clickhouse:8123/`；hosts 配 xy1/xy2/xy3.test 三 server_name；`docker kill jump-1` 零中断演练。M1-11 wrk 压测存档（Kafka 发送分段测：先关 consumer 测堆积再测追赶，DESIGN 8.1 口径）。
 - sharding.yaml 环境变量注入已完成（`?placeholder-type=environment`）；容器内 profile 注入 `XSL_MYSQL_HOST=mysql` 留 M1-10 compose 化时接线。
 - 生成 API 尚未接 `xsl_base.tenant.quota_*` 配额校验（DESIGN 5.1 步骤 1）；与白名单 DB 化、outbox 补偿任务（`POST /internal/outbox/replay`）一并在 M2/M3 落地，M1 越权与一致性路径已按口径实现。
 - outbox.id 目前为分片内 AUTO_INCREMENT，跨分片不唯一——M3 outbox 实现时改 ShardingSphere key-generator(SNOWFLAKE) 或应用侧雪花。

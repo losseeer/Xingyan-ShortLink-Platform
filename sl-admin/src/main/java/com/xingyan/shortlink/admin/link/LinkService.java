@@ -97,7 +97,8 @@ public class LinkService {
         String code = allocateCode(req.shortCode());
         long id = idGenerator.nextId();
         RouteConfig snapshot = new RouteConfig(req.originUrl(), tenantId, redirectType,
-                req.expireTime(), req.accessLimit(), 0, 1);
+                req.expireTime(), req.accessLimit(), 0, 1,
+                req.channelId(), req.campaignId(), req.promoterId());
         String routeJson = writeJson(snapshot);
 
         try {
@@ -157,7 +158,8 @@ public class LinkService {
                     "expire_time must be in the future");
         }
         Map<String, Object> current = jdbc.queryForMap(
-                "SELECT origin_url, redirect_type, expire_time, access_limit, status "
+                "SELECT origin_url, redirect_type, expire_time, access_limit, status, "
+                        + "channel_id, campaign_id, promoter_id "
                         + "FROM short_link WHERE tenant_id = ? AND short_code = ?", tenantId, code);
         LocalDateTime expireTime = req.expireTime() != null ? req.expireTime() : toLocalDateTime(current.get("expire_time"));
         Integer accessLimit = req.accessLimit() != null ? req.accessLimit() : toInteger(current.get("access_limit"));
@@ -165,7 +167,9 @@ public class LinkService {
 
         long version = nextRouteVersion(code);
         RouteConfig snapshot = new RouteConfig((String) current.get("origin_url"), tenantId,
-                ((Number) current.get("redirect_type")).intValue(), expireTime, accessLimit, status, version);
+                ((Number) current.get("redirect_type")).intValue(), expireTime, accessLimit, status, version,
+                (String) current.get("channel_id"), (String) current.get("campaign_id"),
+                (String) current.get("promoter_id"));
         String routeJson = writeJson(snapshot);
 
         txWriter.updateCommitted(tenantId, code, expireTime, accessLimit, status, routeJson);

@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!-- 个人单机开发口径：
+     1) default 用户保持镜像原语义（容器内本机免密），供 clickhouse-client/运维使用；
+     2) 新增 xsl_app 账号供宿主侧应用（sl-consumer/stats）经 8123 HTTP 访问，
+        default 带口令走 HTTP 在 24.8 宿主 NAT 语义下不稳定，专用账号是最稳的口径。 -->
+<clickhouse>
+  <users>
+    <xsl_app>
+      <password>xsl-dev</password>
+      <!-- Docker Desktop 宿主连接经 VM NAT，源地址不固定（ip_range 均不命中）；
+           8123 仅发布在宿主回环，访问边界=端口不出机器+口令，故此处放开全部来源 -->
+      <networks>
+        <ip>::/0</ip>
+      </networks>
+      <profile>default</profile>
+      <quota>default</quota>
+      <access_management>1</access_management>
+    </xsl_app>
+  </users>
+</clickhouse>

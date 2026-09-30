@@ -1,11 +1,13 @@
 global:
   scrape_interval: 15s
 
+# M1-10 起应用全部容器化，抓取走 compose 网络内的容器名（不再用 host.docker.internal）。
+# jump 两个实例分别打 instance 标签，与 XSL_INSTANCE 注入的 micrometer 标签互相印证。
 scrape_configs:
-  - job_name: services
+  - job_name: xsl-metrics
     metrics_path: /actuator/prometheus
     static_configs:
-      # 应用未容器化前从宿主抓取；实例随 M1-07+ 逐个接入
-      - targets: ["host.docker.internal:8020", "host.docker.internal:8030"]
-        labels:
-          tier: app
+      - targets: ["jump-1:8020", "jump-2:8020"]
+        labels: { tier: data }
+      - targets: ["gateway:8010", "admin:8030", "consumer:8040"]
+        labels: { tier: control }

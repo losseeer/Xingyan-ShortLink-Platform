@@ -63,8 +63,13 @@ loc_of() { curl -s -o /dev/null -D - "$JUMP$1" | awk 'tolower($1)=="location:"{p
 metric_db() { curl -s "$JUMP/actuator/prometheus" | awk '/xsl_jump_route_lookup_total\{.*level="db"/{print $2}' | tail -1; }
 
 # 1. 正常码 → 302 + Location 正确（/s/ 前缀与裸路径同义）
+# M1-09 起 jump 会拼归因参数并生成 xy_click_id，本 fixture 无渠道/活动/推广人，
+# 所以 Location 只应多出 ?xy_click_id=c<snowflake>（M1-08 契约）。
 check "redirect-302" 302 "$(code_of "/s/${CODES[0]}")"
-check "redirect-location" "$ORIGIN" "$(loc_of "/s/${CODES[0]}")"
+LOC=$(loc_of "/s/${CODES[0]}")
+check "redirect-location-origin" "$ORIGIN" "${LOC%%\?*}"
+check "redirect-location-clickid" "yes" \
+  "$(python3 -c "import re,sys;print('yes' if re.fullmatch(r'xy_click_id=c[0-9a-f]+', sys.argv[1].split('?')[-1]) else 'no')" "$LOC")"
 check "bare-path-302" 302 "$(code_of "/${CODES[0]}")"
 
 # 2. 冷码二查命中缓存：首查 db+1，二查 db 不增；Redis 写回存在

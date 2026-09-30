@@ -1,5 +1,20 @@
 name: xsl
 
+# 容器网络内的中间件地址（宿主默认值写在各自 application.yml 的 ${VAR:default} 里）。
+# 四个应用共用同一份环境变量命名空间：每个服务只读自己用到的键，多余注入不影响行为，
+# 换来的是 compose 里少四处近似重复、且 `make demo` 一条 env 改址即可整体迁移。
+x-app-env: &app-env
+  XSL_MYSQL_HOST: mysql
+  XSL_MYSQL_PORT: "3306"
+  XSL_MYSQL_USER: root
+  XSL_MYSQL_PASSWORD: xsl-dev
+  XSL_REDIS_HOST: redis
+  XSL_REDIS_PORT: "6379"
+  XSL_KAFKA_BOOTSTRAP: kafka:9092
+  XSL_CH_URL: http://clickhouse:8123/
+  XSL_CH_USER: xsl_app
+  XSL_CH_PASSWORD: xsl-dev
+
 services:
 
   mysql:
@@ -86,12 +101,110 @@ services:
       timeout: 5s
       retries: 20
 
+  # ===================== 应用面（M1-10）=====================
+  # 镜像由 scripts/build-images.sh 产出（宿主 mvn package → COPY jar），compose 只消费 tag；
+  # 需要 rebuild 时：make images（见 Makefile）。
+
+  gateway:
+    image: xsl/gateway:dev
+    mem_limit: 512m
+    restart: always
+    environment:
+      <<: *app-env
+      SERVER_PORT: "8010"  # Spring Boot 宽松绑定：env 优先于 yml 的 server.port
+      XSL_ADMIN_HOST: admin
+      XSL_ADMIN_PORT: "8030"
+    ports: ["8110:8010"]  # 宿主 8010 已被本机其他项目占用，故映射 8110
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck: &http-health
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${SERVER_PORT}/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
+
+  admin:
+    image: xsl/admin:dev
+    mem_limit: 640m
+    restart: always
+    environment:
+      <<: *app-env
+      SERVER_PORT: "8030"
+    ports: ["8030:8030"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *http-health
+
+  # 数据面多实例（DESIGN 3.3「单机 ≠ 单实例」）：两个显式服务而非 --scale，
+  # 因为 nginx upstream 需要稳定的容器 DNS 名，且验收要 `docker kill xsl-jump-1` 按名逐个摘除。
+  jump-1:
+    image: xsl/jump:dev
+    mem_limit: 512m
+    restart: always
+    environment:
+      <<: *app-env
+      SERVER_PORT: "8020"
+      XSL_INSTANCE: jump-1
+      XSL_JUMP_WAL_DIR: /app/data/wal
+    ports: ["8020:8020"]  # 宿主端口仅供直连调试；对外入口是 nginx :80
+    volumes:
+      - ./data/jump-wal/jump-1:/app/data/wal
+    # 依赖刻意不含 kafka：数据面在事件通道不可达时必须继续 302（走 WAL，DESIGN 8.3）。
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *http-health
+
+  jump-2:
+    image: xsl/jump:dev
+    mem_limit: 512m
+    restart: always
+    environment:
+      <<: *app-env
+      SERVER_PORT: "8020"
+      XSL_INSTANCE: jump-2
+      XSL_JUMP_WAL_DIR: /app/data/wal
+    ports: ["8022:8020"]
+    volumes:
+      - ./data/jump-wal/jump-2:/app/data/wal
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *http-health
+
+  consumer:
+    image: xsl/consumer:dev
+    mem_limit: 512m
+    restart: always
+    environment:
+      <<: *app-env
+      SERVER_PORT: "8040"
+    ports: ["8040:8040"]
+    depends_on:
+      kafka: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+    healthcheck:
+      <<: *http-health
+
   nginx:
     image: nginx:1.27-alpine
     ports: ["80:80"]
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    # service_started 而非 healthy：nginx 只在启动时解析 upstream 容器名，
+    # 要求「已创建」即可；若配 healthy，则验收中 kill 掉 jump-1 后 nginx 无法重启。
+    depends_on:
+      gateway: {condition: service_started}
+      admin: {condition: service_started}
+      jump-1: {condition: service_started}
+      jump-2: {condition: service_started}
+      consumer: {condition: service_started}
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 10s

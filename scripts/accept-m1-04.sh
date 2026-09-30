@@ -2,7 +2,7 @@
 # M1-04 验收脚本（DEVELOPMENT_PLAN 验收命令列）：
 # 正确签名→200；改一字节签名→401；重放旧时间戳/nonce→401；同 Idempotency-Key 二次 POST→同一响应。
 set -uo pipefail
-GATEWAY="${GATEWAY:-http://localhost:8010}"
+GATEWAY="${GATEWAY:-http://localhost:8110}"  # M1-10 起 gateway 容器化；宿主 8010 被本机其他项目占用，映射到 8110
 API_KEY="xy-key-alice-001"
 
 sign() { # sign <secret> <method> <path> <ts> <nonce> <body>

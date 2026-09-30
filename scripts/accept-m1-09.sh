@@ -11,7 +11,10 @@ CH_CRED='xsl_app:xsl-dev'
 TENANT=1001
 N_MAIN=${N_MAIN:-1000}
 N_OUTAGE=${N_OUTAGE:-200}
-WAL_DIR="${WAL_DIR:-./data/jump-wal}"
+# M1-10 起 jump 容器化：WAL 落在 jump-1 的 bind mount 上（compose 文件同级的 data/ 目录），
+# 用脚本自身位置解析，避免从不同 cwd 调用时找不到目录。
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WAL_DIR="${WAL_DIR:-$REPO_ROOT/deploy/compose/data/jump-wal/jump-1}"
 KAFKA_CTR="${KAFKA_CTR:-xsl-kafka-1}"
 
 ch() { curl -s -m 15 -u "$CH_CRED" "$CH" --data-binary "$1"; }

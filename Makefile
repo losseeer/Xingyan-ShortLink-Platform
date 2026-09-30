@@ -9,7 +9,7 @@ COMPOSE := docker compose -f deploy/compose/docker-compose.yml
 SETTINGS := $(wildcard deploy/maven/settings-aliyun.xml)
 MVN := mvn -q $(if $(SETTINGS),-s $(SETTINGS),)
 
-.PHONY: print-java verify up down ps logs demo db-init seed
+.PHONY: print-java verify up down ps logs demo db-init seed images nginx-reload
 
 MYSQL_EXEC := $(COMPOSE) exec -T mysql mysql -uroot -pxsl-dev
 REDIS_EXEC := $(COMPOSE) exec -T redis redis-cli
@@ -25,6 +25,11 @@ seed:
 verify:
 	$(MVN) verify
 
+# 应用镜像 = 宿主 mvn 产物 + JRE（M1-10）。compose 里四个服务只引用 tag，不做镜像构建，
+# 所以 `up` 之前要先 `make images`（首次或改代码后）。
+images:
+	@bash scripts/build-images.sh --mvn
+
 up:
 	$(COMPOSE) up -d --wait
 
@@ -36,6 +41,11 @@ ps:
 
 logs:
 	$(COMPOSE) logs -f --tail=100
+
+# 数据面 nginx 用静态 upstream（要 LB + 同请求改投），只在启动时解析容器名；
+# 单独 recreate 某个 jump 若换了 IP，就要优雅重载一次（不断流）。控制面走 resolver 自愈，不需要。
+nginx-reload:
+	$(COMPOSE) exec -T nginx sh -c 'nginx -t && nginx -s reload'
 
 demo:
 	@echo "TODO M1-12: up -> seed -> create -> click -> stats 一键复现"

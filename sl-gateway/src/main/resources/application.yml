@@ -15,7 +15,8 @@ spring:
           uri: http://${XSL_ADMIN_HOST:localhost}:${XSL_ADMIN_PORT:8030}
           predicates:
             - Path=/api/**
-        # /s/{code} → jump upstream：M1-10 接入（含 ×2 负载均衡），此处不抢先
+        # /s/** 不经这里：M1-10 由 nginx upstream 直连 jump×2（DESIGN 3.3 数据面不叠加管理面跳数，
+        # 单机上每一次转发都是 P99 成本）。Sentinel 按 IP 限流落到 jump 侧实现。
 
 xsl:
   auth:

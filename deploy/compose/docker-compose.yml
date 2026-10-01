@@ -191,8 +191,12 @@ services:
       <<: *app-env
       SERVER_PORT: "8040"
     ports: ["8040:8040"]
+    # 依赖 kafka-init「成功退出」而不只是 kafka「健康」：topic 不存在时 spring-kafka 容器
+    # 启动即抛 ConfigException 并 crash-loop（Docker 重启后必现，本机实测 consumer Restarting）。
+    # 一次性容器用 service_completed_successfully 表达，正好也把 --wait 的语义对齐成"已完成"。
     depends_on:
       kafka: {condition: service_healthy}
+      kafka-init: {condition: service_completed_successfully}
       clickhouse: {condition: service_healthy}
     healthcheck:
       <<: *http-health

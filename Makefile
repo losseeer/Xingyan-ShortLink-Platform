@@ -51,15 +51,8 @@ verify:
 images:
 	@bash scripts/build-images.sh --mvn
 
-# kafka-init 是一次性容器（建 topic，restart:"no"）。`up --wait` 会把它"退出"判成失败
-# （本机 compose v5.1.3 实测报 container xsl-kafka-init-1 exited (0)），所以 --wait 只等常驻服务；
-# 一次性容器由第一次 up -d 带起来，topic 建完即退，不影响后续。
-DAEMON_SERVICES := mysql redis kafka clickhouse gateway admin jump-1 jump-2 consumer nginx
-
-# 两段式：先创建/重建，再 --wait 等健康。
 up:
-	$(COMPOSE) up -d
-	$(COMPOSE) up -d --wait $(DAEMON_SERVICES)
+	$(COMPOSE) up -d --wait
 
 down:
 	$(COMPOSE) down

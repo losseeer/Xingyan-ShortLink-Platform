@@ -32,10 +32,7 @@ echo "OK docker 可用，四个应用镜像就位"
 
 # ================= 1. 起全栈 =================
 step "1. 起全栈（十个容器全部 healthy）"
-# 与 make up 同款两段式：kafka-init 是一次性容器，同一次调用里启动即退出会被 --wait 判为失败
-DAEMON_SERVICES="mysql redis kafka clickhouse gateway admin jump-1 jump-2 consumer nginx"
-$COMPOSE up -d >/dev/null || { echo "compose up 失败，看 make logs"; exit 1; }
-$COMPOSE up -d --wait $DAEMON_SERVICES || { echo "up --wait 超时，看 $COMPOSE ps 与 make logs"; exit 1; }
+$COMPOSE up -d --wait || { echo "up --wait 超时，看 $COMPOSE ps 与 make logs"; exit 1; }
 $COMPOSE ps --format 'table {{.Service}}\t{{.Status}}'
 
 # ================= 2. 数据面就位：建库 + 租户字典 =================

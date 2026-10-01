@@ -29,7 +29,7 @@
 | `deploy/` | `compose/`（编排、nginx、MySQL/ClickHouse 初始化、`overrides/` 压测叠加、`.env` 不入库）、`docker/`（应用镜像 Dockerfile）、`maven/`（构建 settings） |
 | `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
 | `bench/` | 压测脚本、wrk lua、`reports/` 存档（DESIGN 1.3 的数字只引用这里） |
-| `docs/` | `DESIGN.md`（设计）、`DEVELOPMENT_PLAN.md`（计划与工程约定）、`PROBLEMS_AND_SOLUTIONS.md`（关键问题与解决方案，跨里程碑沉淀）、`iterations/ITER-<M>.md`（每期流水）+ 模板 |
+| `docs/` | `DESIGN.md`（设计）、`DEVELOPMENT_PLAN.md`（计划与工程约定）、`iterations/ITER-<M>.md`（每期流水）+ 模板 |
 
 依赖方向由 maven-enforcer 强制：`sl-jump` 不得依赖 `sl-admin`/`sl-gateway`（数据面独立性）。
 

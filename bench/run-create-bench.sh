@@ -3,7 +3,7 @@
 # 经真实管理面链路 nginx→gateway(HMAC)→admin 并发签发，统计 TPS、唯一性与服务端响应延迟分位。
 # 工具口径如实记录：wrk 的 Lua 没有 HMAC 原语（每请求时间戳+nonce 必须重签），
 # 所以这一项用 python 线程池客户端；客户端与服务同宿主，数字按保守口径读。
-source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/lib-bench.sh"
 
 N_CREATE=${N_CREATE:-2000}
 CREATORS=${CREATORS:-16}

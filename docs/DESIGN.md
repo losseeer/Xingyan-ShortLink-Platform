@@ -48,7 +48,7 @@
 | 指标 | 目标 | 实测（单机：`m1` 收口验收 + M1-11 压测补跑） | 凭证 |
 |---|---|---|---|
 | 跳转接口可用性 | 99.9%（单机连续 72h 压测无 5xx） | 滚动重启窗口 3760 击 **0 次 5xx**；M1-11 三轮共 **3,614,754 击，非 302 响应 0 次**（服务侧计数交叉验证）；**72h 连续压测未跑** | `scripts/accept-m1-10.sh` C/D 段、`bench/reports/2026-10-01-1325-m1-11-jump.md` |
-| 跳转服务端延迟 | P50 < 10ms，P99 < 50ms | **拐点在 100 连接附近**：16/50/100 连接实测 P50 1.34/2.43/4.58ms、P99 61.03/10.50/30.71ms（100 连接处 19,284 QPS **达标**）；200/400 连接 P99 68.16/141.92ms **超标**——已证 G1+768M 变体不改善（P99 57.9/57.6ms），尾部来自饱和区排队而非 GC | `bench/reports/2026-10-01-1353-m1-11-jump-sensitivity.md`、`bench/reports/2026-10-01-1348-m1-11-jump.md` |
+| 跳转服务端延迟 | P50 < 10ms，P99 < 50ms | **拐点在 100 连接附近**：16/50/100 连接实测 P50 1.34/2.43/4.58ms、P99 61.03/10.50/30.71ms（100 连接处 19,284 QPS **达标**）；200/400 连接 P99 68.16/141.92ms **超标**——已证 G1+768M 变体不改善（P99 57.9/57.6ms），尾部来自饱和区排队而非 GC | `bench/reports/2026-10-01-1353-m1-11-jump-sensitivity.md`、`bench/reports/2026-10-01-1348-m1-11-jump-g1.md` |
 | 短码生成接口延迟 | P99 < 20ms，可用性 99.9% | **未达标**：16 并发 ×2000 次实测 p50 36.5 / p95 61.4 / **p99 91.6ms**，0 失败、2000 码全唯一；工具口径=python 逐请求 HMAC（含 nginx+gateway 两跳与客户端自身开销） | `bench/reports/2026-10-01-1355-m1-11-create.md` |
 | 跳转链路缓存命中率 | > 99.5% | **100.000%**（三轮分层增量 local 1,421,632 / redis 5,652 / **db=0** / miss=0：热码全程未回源） | `bench/reports/2026-10-01-1325-m1-11-jump.md`、`scripts/accept-m1-07.sh` |
 | ClickEvent 丢失率 | < 0.01%（本地重试队列兜底后） | **0 / 1,104,470**（M1-11 停 consumer 打 45s 造积压，放开后 33s 追平，生产数=CH 落库数差值 0）；另有 M1-09 的 0/1204 含 Kafka pause 走 WAL 的演练 | `bench/reports/2026-10-01-1336-m1-11-kafka.md`、`scripts/accept-m1-09.sh` |
@@ -173,20 +173,30 @@
 
 仓库组织与架构粒度是**正交的两个维度**：是否"微服务"由进程边界决定（独立部署、独立扩缩、网络通信），与代码放几个 git 仓库无关。本设计的形态：
 
-- **仓库维度：单 monorepo**（Maven 多模块 + 一个前端模块）：
+- **仓库维度：单 monorepo**（Maven 多模块 + 一个前端模块；当前 reactor 是 5 个 Java 模块，`sl-console-web`/`sl-mock` 见下图标注）：
 
 ```
-xingyan-shortlink/
-├── sl-common/          # DTO、工具、错误码、UA 解析封装
-├── sl-gateway/         # Spring Cloud Gateway（限流/鉴权/多域名）
-├── sl-admin/           # 管理面：生成、规则、租户、统计 API
-├── sl-jump/            # 数据面：跳转服务（无状态，默认 ×2 实例）
-├── sl-consumer/        # Kafka → ClickHouse 聚合 + 归因回传
-├── sl-console-web/     # Vue 3 主办方看板（独立构建，产物进 Nginx）
-├── sl-mock/            # mock 购票页 / mock 宣发平台
-├── deploy/compose/     # docker-compose.yml + profiles + nginx 配置
-└── bench/              # 压测脚本与结果存档（1.3 口径凭证）
+Xingyan-ShortLink-Platform/          # 实际仓库名（下图按 m1 收口时的真实布局）
+├── sl-common/          # DTO、错误码、归因拼接、短码与雪花生成、准入校验
+├── sl-gateway/         # Spring Cloud Gateway：HMAC 鉴权、时间戳窗口、nonce 防重放
+├── sl-admin/           # 管理面：签发、短码池、准入白名单、outbox、缓存同步
+├── sl-jump/            # 数据面：纯 302 跳转 + 事件投递（Kafka/WAL），无状态 ×2 实例
+├── sl-consumer/        # Kafka → ClickHouse 批量幂等写入 + 统计查询 API
+├── sl-mock/            # mock 购票页/宣发平台：**当前只是占位目录**（无 pom、未进 reactor），M3 建模块
+├── sl-console-web/     # Vue 3 主办方看板：M3 交付，**仓库里尚未创建**
+├── deploy/
+│   ├── compose/        # docker-compose.yml、nginx 配置、MySQL/ClickHouse 初始化、overrides/、.env（不入库）
+│   ├── docker/         # 应用镜像 Dockerfile（宿主 jar + JRE 一层）
+│   └── maven/          # 构建用 settings 镜像配置
+├── scripts/            # 一任务一验收脚本 accept-m1-NN.sh + build-images/demo/init-ch-user/rotate-mysql-password + lib-devenv
+├── bench/              # 压测脚本、wrk lua、lib-bench.sh + reports/ 存档（1.3 口径凭证）
+└── docs/               # DESIGN.md、DEVELOPMENT_PLAN.md、iterations/ITER-<M>.md + 模板
 ```
+
+> 命名口径：模块目录 = Maven `artifactId` = Java 包末段（`sl-jump` ↔ `com.xingyan.shortlink.jump`），一一对应；
+> 验收脚本按任务编号命名（`scripts/accept-m1-07.sh` ↔ 计划表 M1-07），压测产物按
+> `YYYY-MM-DD-HHMM-m1-<任务>-<对象>[-<变体>].md` 命名，两者都保证"看名字就知道对应哪条验收项"。
+
 
 - **部署维度：进程已拆分**（gateway / admin / jump×2 / consumer 各自独立进程与伸缩），即 **monorepo + 细粒度部署（分布式单体）**——不是传统单体，也不引入服务网格、每服务独立库等全套微服务装具。Nacos 仅做配置下发与注册发现。
 - 单人开发下多仓只有版本联动摩擦、没有收益；模块间依赖方向由 Maven 强制（`sl-jump` 不得依赖 `sl-admin`），这条约束比仓库数量更能防架构腐化。面试口径："按微服务粒度部署、按 monorepo 管理"是 `nageoffer/shortlink`（单仓多服务）的同款形态。
@@ -458,7 +468,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 
 实测进度（2026-10-01）：M1-11 已补跑，上表六项中四项达标、两项未达标、一项因功能未交付而未测。三条必须一起读走的限制说明：
 
-1. **拐点与尾部归因**：200 连接把跳转推过拐点，P99 落入排队时延；已用对照实验证伪"GC 是主因"——`-XX:+UseG1GC -XX:MaxGCPauseMillis=20` + 768M 的变体 P99 为 57.93/57.63ms，与默认 SerialGC 同档（存档 `2026-10-01-1348-m1-11-jump.md`），故默认配置维持 SerialGC+512M 不改。
+1. **拐点与尾部归因**：200 连接把跳转推过拐点，P99 落入排队时延；已用对照实验证伪"GC 是主因"——`-XX:+UseG1GC -XX:MaxGCPauseMillis=20` + 768M 的变体 P99 为 57.93/57.63ms，与默认 SerialGC 同档（存档 `2026-10-01-1348-m1-11-jump-g1.md`），故默认配置维持 SerialGC+512M 不改。
 2. **资源上限是被测口径的一部分**：jump 容器 RSS 实测顶在 502–509MiB/512MiB，ClickHouse 在 2GiB 上限下批量插入 10M 行会撞 `Code: 241 Memory limit exceeded`——这两条都是**如实记录**而非绕过（分块 100k 行/批后写入吞吐测得 1.06M rows/s）。
 3. **签发链路需要独立复测**：396–541 TPS 的波动来自客户端（python + 逐请求签名）与服务侧未分离，M2 要换 JMeter/预签名脚本重测后再谈优化结论。
 

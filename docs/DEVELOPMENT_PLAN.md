@@ -50,7 +50,9 @@ outbox 同步器 + `version` 强校验通道｜归因回传 mock 宣发平台（
 ## 三、工程约定（跨里程碑生效）
 
 - 版本钉选：Boot 3.3.x、ShardingSphere-JDBC 5.5.x（Boot3 兼容需开工首日验证，风险高则降为"双库手工路由 + 文档推演"，4.1 设计价值不受损）、Guava 33（Bloom）、Vavr 不引入。
-- 测试分层：sl-common 属性测试（jqwik）；服务层 Testcontainers（复用 compose 镜像）；E2E 用 bash 脚本存 `bench/e2e/`，`make demo` 即 M1-12 产物。
+- 测试分层（m1 收口后按现实回写）：sl-common 属性测试（jqwik）；服务层活体测试**直连本机 compose 中间件**（MySQL 3307 / Redis 6380 / Kafka 9094 / CH 8123，端口不可达则 `assumeTrue` 跳过）——没有引入 Testcontainers，因为 compose 栈本身就是被测拓扑，再起一套容器等于测两个环境；
+  任务级 E2E 用 bash 脚本，落点 **`scripts/accept-m1-NN.sh`**（编号=本计划任务号，可被文档与 ITER 直接引用），而不是原定的 `bench/e2e/`——`bench/` 只装压测脚本与 `reports/` 存档，两类凭证的时效性不同（验收随契约演进重跑、压测存档只增不改），混在一层会互相污染命名。`make demo` 即 M1-12 产物。
+- **测试类命名约定**（后缀即语义，新增测试沿用）：`*Test` 纯单元（不碰外部依赖）；`*PropertyTest` jqwik 属性测试；`*LiveTest` 活体依赖（不可达自动跳过）；`*IntegrationTest` 活体 + Spring 上下文；`*VerificationTest` 一次性验证型（分片路由这类"跑一遍拿证据"的用例）。存量用例里有一处不符：`ShortCodePoolServiceTest` 实际是活体用例（带 `assumeTrue` 跳过），名字却没带 Live/Integration 后缀。**不做一次性改名**——`docs/iterations/ITER-M1.md` 与计划表都按这个名字引用了它，改名会让凭证链接断掉；规则是下次改动该文件时顺手改成 `ShortCodePoolServiceLiveTest` 并在当期 ITER 记一行。
 - Commit 纪律：每任务一 squash 提交，附验收命令输出；里程碑 tag；`bench/reports/` 只增不改。
 - **回归纪律（M1-12 收口补，跨里程碑生效）**：凡改公共契约（跳转 Location、ClickEvent 字段、`route_json` 结构）的任务，收口前必须重跑受影响链路的全部旧验收脚本，并把复跑结果写进当期 ITER 的实测表。起因：M1-09 给 jump 接归因拼接后没重跑 M1-07，那条"Location 逐字符等于 origin_url"当场失效却仍以绿记录在册，直到 M1-10 容器化整套复跑才暴露（ITER-M1 §5）。
 - **迭代说明文档（硬性要求）**：每个里程碑收口必须产出一份 `docs/iterations/ITER-<里程碑>.md`（模板 `ITER-TEMPLATE.md`），内容含：本期做了什么/任务完成对照表（含砍掉与顺延项及原因）/实测数字与 `bench/` 凭证链接/对 DESIGN 的偏差与回写/下一期待办。**里程碑中途发生范围或设计变更时，先增改当期迭代文档再动代码**；文档与 tag 一起提交，缺一不算收口。

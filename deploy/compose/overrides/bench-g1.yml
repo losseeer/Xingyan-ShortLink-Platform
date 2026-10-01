@@ -1,6 +1,6 @@
-# M1-11 压测用的临时叠加（override）文件：只改 jump 的内存与 GC 策略，其余沿用主 compose。
+# M1-11 压测用的叠加配置（override），放在 deploy/compose/overrides/ 下：只改 jump 的内存与 GC 策略，其余沿用主 compose。
 # 用法（不污染默认配置，用完可 down 或继续叠加）：
-#   docker compose -f deploy/compose/docker-compose.yml -f bench/docker-compose.bench-g1.yml up -d jump-1 jump-2
+#   docker compose -f deploy/compose/docker-compose.yml -f deploy/compose/overrides/bench-g1.yml up -d jump-1 jump-2
 # 为什么要这份文件：默认镜像里 jump 用 `-XX:MaxRAMPercentage=55 -XX:+UseSerialGC` + mem_limit 512m
 # ——那是 Docker VM 只有 3.9G 时代收出来的（ITER-M1 §4）。实测 P99 尾部与 SerialGC major 停顿
 # （单次 148-218ms）同源，VM 提到 8G 之后必须重测才能决定默认值。
@@ -13,3 +13,4 @@ services:
     mem_limit: 768m
     environment:
       JAVA_OPTS: "-XX:MaxRAMPercentage=70 -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -Djava.security.egd=file:/dev/./urandom"
+# 放在 overrides/ 而不是与主文件同名，是为了避免被 compose 自动加载（只有 docker-compose.override.yml 会被自动合并）。

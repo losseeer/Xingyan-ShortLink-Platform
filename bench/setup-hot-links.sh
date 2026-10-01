@@ -3,7 +3,7 @@
 # 产物：bench/.tmp/hot-codes.txt（每行一个 short_code）；预热阶段每个 code 打一击，
 # 把 link_route 灌进 Redis + jump 的 L1，让压测衡量的是"缓存命中路径"而不是回源。
 # 用法：bash bench/setup-hot-links.sh [N]（默认 1000）
-source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/lib-bench.sh"
 
 N=${1:-1000}
 API_KEY="${API_KEY:-xy-key-alice-001}"

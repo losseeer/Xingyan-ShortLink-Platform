@@ -3,7 +3,7 @@
 # 入口是 nginx :80（不是直连 jump），命中路径为 Caffeine(L1)/Redis(L2)，
 # 每轮前后取 xsl_jump_route_lookup_total 的分层计数，命中率按 (local+redis)/总查询算。
 # 达标与否照实写进报告，不做四舍五入式美化。
-source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/lib-bench.sh"
 
 ROUNDS=${ROUNDS:-3}
 DURATION=${DURATION:-60s}
@@ -15,7 +15,7 @@ export BENCH_CODES_FILE="$CODES_FILE"
 [[ -s "$CODES_FILE" ]] || { echo "热码文件不存在：$CODES_FILE（先 bash bench/setup-hot-links.sh）"; exit 1; }
 command -v wrk >/dev/null || { echo "wrk 未安装（brew install wrk）"; exit 1; }
 
-REPORT=$(report_new "m1-11-jump")
+REPORT=$(report_new "m1-11-jump${RUN_LABEL:+-$RUN_LABEL}")   # 变体跑（如 RUN_LABEL=g1）自带后缀，不与默认存档同名
 echo "报告：$REPORT"
 {
   echo "## 参数"

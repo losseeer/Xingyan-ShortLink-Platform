@@ -25,9 +25,11 @@
 | `sl-admin` | 链接签发与治理：短码池、准入白名单、双分片轴写入 + outbox、缓存同步 |
 | `sl-jump` | 数据面：纯 302 跳转 + 点击事件投递（Kafka / WAL 兜底），不依赖管理面 |
 | `sl-consumer` | 事件消费：批量幂等写 ClickHouse，`GET /api/v1/stats/links/{code}` |
-| `sl-mock` | 购票页/宣发平台 mock（M3 落地） |
-| `deploy/` | compose 编排、nginx 配置、MySQL/ClickHouse 初始化脚本、应用镜像 Dockerfile |
-| `scripts/` | 镜像构建 + 各任务验收脚本 + 一键演示 |
+| `sl-mock` | mock 购票页/宣发平台的**占位目录**（无 pom、未进 Maven reactor，M3 才建模块） |
+| `deploy/` | `compose/`（编排、nginx、MySQL/ClickHouse 初始化、`overrides/` 压测叠加、`.env` 不入库）、`docker/`（应用镜像 Dockerfile）、`maven/`（构建 settings） |
+| `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
+| `bench/` | 压测脚本、wrk lua、`reports/` 存档（DESIGN 1.3 的数字只引用这里） |
+| `docs/` | `DESIGN.md`、`DEVELOPMENT_PLAN.md`、`iterations/ITER-<M>.md` + 模板 |
 
 依赖方向由 maven-enforcer 强制：`sl-jump` 不得依赖 `sl-admin`/`sl-gateway`（数据面独立性）。
 

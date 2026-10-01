@@ -6,7 +6,10 @@ target/
 .DS_Store
 node_modules/
 dist/
-data/
+# jump 的 WAL 落点是「compose 文件同级的 data/」（bind mount），不是仓库根的某个 data 目录：
+# 早先用无锚定的 `data/` 会把两者一起忽略，既掩盖了根目录残留的空 data/，也让真正的
+# WAL 目录是否被跟踪变得含糊。锚定后，两处路径的语义都写清楚了。
+deploy/compose/data/
 wal/
 *.log
 .jqwik-database

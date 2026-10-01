@@ -4,7 +4,7 @@
 #   第二段：放开 consumer → 追平 lag → 度量消费+写库的追赶吞吐，并对账"生产数 = 落库数"。
 # 对账口径：本轮所有热码共用一个 campaign_id（setup 打的标），CH 里按 campaign 数出来即可，
 # 不受历史数据干扰；重复由 event_id + ReplacingMergeTree 幂等消化。
-source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/lib-bench.sh"
 
 [[ -f "$TMP_DIR/bench-meta.env" ]] || { echo "先跑 bench/setup-hot-links.sh"; exit 1; }
 source "$TMP_DIR/bench-meta.env"

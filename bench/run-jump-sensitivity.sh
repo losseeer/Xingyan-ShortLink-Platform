@@ -2,7 +2,7 @@
 # 跳转并发敏感度曲线：同一份热码，按 (线程, 连接) 逐点压 20s，
 # 每点同时抓「负载进行中的 jump CPU」与「jvm_gc_pause 增量」——
 # 用来回答"SLO 没达标时瓶颈在服務端还是排队"这个追问。
-source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/lib-bench.sh"
 
 DURATION=${SENS_DURATION:-20s}
 POINTS=${SENS_POINTS:-"2:16 4:50 4:100 8:200 8:400"}

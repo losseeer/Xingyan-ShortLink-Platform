@@ -22,18 +22,19 @@ bash bench/run-create-bench.sh                 # 短码签发 TPS + 唯一性
    吞吐上界包含客户端自身开销，因此一律按保守口径报告，不声称"服务端上限"。
 2. **未达标就写未达标**：报告必须给实际值 + 瓶颈分析清单，禁止把目标值写进实测列。
 3. **只增不改**：`bench/reports/` 历史文件不修订；结论变化就新增一份，旧的留着（可追溯）。
-4. **每份报告自带四元组**：日期、JVM 参数、宿主型号、结果——由 `bench/lib.sh` 的 `host_facts` 自动写头部。
+4. **每份报告自带四元组**：日期、JVM 参数、宿主型号、结果——由 `bench/lib-bench.sh` 的 `host_facts` 自动写头部。
 5. **报告文本里的命令不可执行**：说明性命令一律写在单引号里或用文本描述。本仓曾有一条 `echo "…"` 在双引号里用反引号包住 `docker compose down -v`，生成报告时真的执行了一次——写脚本时把这条当硬性规则。
-6. **计数用指标而不是日志**：命中率取 `xsl_jump_route_lookup_total{level=...}` 的轮次增量，
+6. **变体跑要带标签**：同一基准换配置再跑时加 `RUN_LABEL`（如 `RUN_LABEL=g1 bash bench/run-jump-bench.sh`），否则存档文件名与默认跑撞名，只能靠时间戳分辨（本轮就出过一次，已把 `…-1348…` 改名 `-g1` 并同步所有引用）。
+7. **计数用指标而不是日志**：命中率取 `xsl_jump_route_lookup_total{level=...}` 的轮次增量，
    事件量取 ClickHouse `count() FINAL`，不拿 nginx access log 估算。
 
 ## 目录
 
 | 文件 | 作用 |
 |---|---|
-| `lib.sh` | 装载凭据（`scripts/lib-devenv.sh`）、指标快照、consumer lag、宿主事实、报告头部 |
+| `lib-bench.sh` | 装载凭据（`scripts/lib-devenv.sh`）、指标快照、consumer lag、宿主事实、报告头部 |
 | `setup-hot-links.sh` | 经 nginx→gateway(HMAC)→admin 批量签发热码 + 预热缓存 |
 | `wrk/jump-path.lua` | wrk 请求脚本：随机码、固定 Host 头、只认 302 |
 | `run-*.sh` | 四类基准的跑批与存档 |
-| `reports/` | 存档输出（只增不改） |
+| `reports/` | 存档输出（只增不改），命名 `YYYY-MM-DD-HHMM-m1-<任务>-<对象>[-<变体>].md` |
 | `.tmp/` | 中间产物（热码清单等），不入库 |

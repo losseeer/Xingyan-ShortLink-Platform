@@ -5,7 +5,7 @@
 #   2) 写入吞吐单独测一小批合成事件（独立 campaign 标记，测完删除，不污染对账）；
 #   3) 上限如实记录：mem_limit=2g 下，在数千万行存量上继续大批量插入会撞 Code 241（本机实测）。
 # 不用影子库：被测对象就是生产那套 DDL/分区键/物化视图，换库等于换了被测系统。
-source "$(dirname "$0")/lib.sh"
+source "$(dirname "$0")/lib-bench.sh"
 
 INSERT_ROWS=${CH_INSERT_ROWS:-1000000}
 CHUNK=${CH_CHUNK:-100000}

@@ -47,6 +47,8 @@
 
 ## 4. 与设计的偏差及回写
 
+> 本节是**本期流水**，含琐碎项；其中根因非显然、会复发或影响判断的条目已提升到 [`docs/PROBLEMS_AND_SOLUTIONS.md`](PROBLEMS_AND_SOLUTIONS.md)（PS-01…PS-21），门槛见该文件首部。两边都要读：这里给上下文与当期状态，那边给可复用的判断。
+
 | 偏差点 | 原因 | 处理 |
 |---|---|---|
 | Kafka 单 listener 无法跨容器回连 | advertised `localhost:9092` 对容器内客户端不可达 | 改双 listener（INTERNAL kafka:9092 / EXTERNAL localhost:9094），sl-consumer 默认 bootstrap 改 9094；属部署细节，DESIGN 无需改 |
@@ -64,7 +66,7 @@
 | M1-06 验收直连 sl-admin | 8010/8011 被 argagent 占用是已知环境态；本任务要验的是生成语义而非签名链路（M1-04 已 7/7 验过网关） | `accept-m1-06.sh` 注入 X-Tenant-Id 直打 admin:8030；M1-10 nginx 就位后并入端到端 |
 | ShardingSphere 5.5.1 占位符语法三轮试错 | `$${VAR:::default}`+`;placeholder-type` 是旧文档口径：`:::` 会把默认值解析成空串（Port "" 报错）、`;` 分隔符不被 classpath URL 解析（resource 找不到 NPE）；**去掉 `::` 也不行**——`$${XSL_MYSQL_PASSWORD}` 不被识别为占位符，会原样当字面量提交，症状是"口令明明对却 Access denied"（收口后凭据外置时踩到，admin 容器 unhealthy + 6 个活体测试 error） | 正确姿势：`$${VAR::default}`，"要环境变量但不给默认值"就写 `$${VAR::}`（空默认值）+ `jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment`；已活体回归（路由/池/链路三套 SS 测试全绿） |
 | M1-07 布隆/Cuckoo 前置检查缺席 | 计划含"布隆→Caffeine→Redis→回源"；Cuckoo filter 结构本身排在 M2/M3，M1 引入只会增加半成品 | 以空值标记 `sl:r:nx:{code}`(5min) + L1 负缓存(30s) 作为 M1 的穿透防线（DESIGN 5.2 步骤 1 的兜底路径先行）；M3 补 Cuckoo 时此层可退役 |
-| M1-07 jump 独立持有分片配置 | Enforcer 禁 jump→admin 依赖（DESIGN 3.4），无法复用 admin 的 sharding.yaml | `sl-jump/sharding-jump.yaml` 只声明 link_route 单表最小配置、连接参数同款环境变量注入；两份配置的同步性由本迭代脚本 phys_db 与 INLINE 表达式互校保障，M2 若配置中心化再消重 |
+| M1-07 jump 独立持有分片配置 | Enforcer 禁 jump→admin 依赖（DESIGN 3.4），无法复用 admin 的 sharding.yaml | `sl-jump/src/main/resources/sharding-jump.yaml` 只声明 link_route 单表最小配置、连接参数同款环境变量注入；两份配置的同步性由本迭代脚本 phys_db 与 INLINE 表达式互校保障，M2 若配置中心化再消重 |
 | M1-07 验收直连 sl-jump:8020 | nginx `/s/**`→jump upstream 属 M1-10 交付 | 脚本对 jump 裸实例断言语义；M1-10 起并入 nginx+多实例链路 |
 | M1-08 只交付纯函数模块，jump 尚未调用 | DESIGN 5.2 的拼接点在跳转链路，但归因值（channel/campaign/promoter）此时只存在于 short_link 行，RouteConfig 未携带，且 M1-09 ClickEvent 才是消费方 | 模块+属性测试先行收口验收口径；M1-09 把归因字段并入 route_json/ClickEvent 时在 Direct302Resolver 接线（Location=merge 结果） |
 | M1-08 `trace_id` 不追加到 URL | 计划行写"生成 xy_click_id + trace_id"，但附录 B 跳转参数契约不含 trace_id，追加即违反"只允许白名单参数" | trace_id 经 `Result.traceId()` 返回，随 M1-09 ClickEvent/日志贯通（DESIGN 8.5 口径），URL 保持最小契约 |
@@ -83,7 +85,7 @@
 | M1-11 未执行即收 M1（计划顺序被打断） | 两项硬前置不满足：本机 Docker Desktop VM 只有 3.9G（全栈常驻 3.3G，余 0.4G 连压测客户端一起跑必然测到资源争抢），且 wrk 未安装、装第三方包需用户确认——此时产出的 QPS/P99 是"错误的数字"而非"保守的数字"，比空缺更有害（1.3 明令不得以目标值冒充） | 经用户确认（2026-09-30）跳过压测直接收口：`bench/reports/` 保持空、DESIGN 1.3 对应两行显式写"未测 + 前置条件"、8.1-A 增实测进度段；M1-11 作为 M2 首项任务，工具选型（`brew install wrk` vs 用现成 `ab`）届时一并定 |
 | M1-12 demo 的点击地址用 `http://xy1.test/{code}` 而 API 返回 `https://` | `short_url` 按 DESIGN 5.1 是生产口径 https，本机 nginx 只监听 80，硬造一个自签证书链或加 `XSL_LINK_SCHEME` 开关都是为演示而改产品行为 | demo 打印两个地址并说明等价关系（脚本第 3 步），README 同样标注；nginx TLS 与 mock 购票页容器一并留 M2（§6） |
 | M1-12 demo 不清理 fixture | 验收脚本必须自净（`accept-m1-10.sh` 有 `trap cleanup EXIT`），但演示的用途是让人接着手工复看（再点几次、查 CH、看 nginx 日志），删掉就没得看了 | 保留每次运行新建的 code（短码池足够大，不冲突）；`docs/DESIGN.md` 之外的脏数据用 `compose down -v` 一次清零，demo 末行给出该命令 |
-| （收口后补记）仓库里的明文凭据必须在外推之前清掉 | 远程 `losseeer/Xingyan-ShortLink-Platform` 是 PUBLIC 而 `git ls-remote` 显示从未推过任何 ref；compose/脚本/配置默认值/活体测试里散落着 MySQL root、ClickHouse `xsl_app`、Grafana 三个本机开发口令——一旦推上去就永久进公开历史 | 凭据全部外置到 `deploy/compose/.env`（0600、gitignore），compose 用 `${VAR:?}` 强制注入；`scripts/lib-devenv.sh` 统一装载并校验字符集；配置与测试去掉旧占位口令的默认值（缺变量则启动失败/用例跳过，绝不静默连到别的库）。ClickHouse 账号不再写 users.d XML（那文件只能落明文），改 `make ch-init` 用 CREATE/ALTER USER+GRANT 在运行时建号，为此给容器内 default 用户挂 `users.d/local-admin.xml` 开 access_management。**注意 `GRANT ALL` 会被拒**（default 自身是按具体权限授权的），授权清单要逐条写 |
+| （收口后补记）仓库里的明文凭据必须在外推之前清掉 | 远程 `losseeer/Xingyan-ShortLink-Platform` 是 PUBLIC 而 `git ls-remote` 显示从未推过任何 ref；compose/脚本/配置默认值/活体测试里散落着 MySQL root、ClickHouse `xsl_app`、Grafana 三个本机开发口令——一旦推上去就永久进公开历史 | 凭据全部外置到 `deploy/compose/.env`（0600、gitignore），compose 用 `${VAR:?}` 强制注入；`scripts/lib-devenv.sh` 统一装载并校验字符集；配置与测试去掉旧占位口令的默认值（缺变量则启动失败/用例跳过，绝不静默连到别的库）。ClickHouse 账号不再写 users.d XML（那文件只能落明文），改 `make ch-init` 用 CREATE/ALTER USER+GRANT 在运行时建号，为此给容器内 default 用户挂 `deploy/compose/init/clickhouse/users.d/local-admin.xml` 开 access_management。**注意 `GRANT ALL` 会被拒**（default 自身是按具体权限授权的），授权清单要逐条写 |
 | （收口后补记）只改 `.env` 不会改数据卷里的真实账号 | MySQL 镜像的 `MYSQL_ROOT_PASSWORD` 仅在全新卷首次初始化时生效；已有卷下改 .env 会让 healthcheck 与应用连接一起报口令不符 | 新增 `scripts/rotate-mysql-password.sh`（`XSL_MYSQL_PASSWORD_OLD=<旧> make mysql-rotate`）在一个会话内 ALTER 全部 root@host 账号（**分次连接会踩坑**：ALTER 立即生效，改完 localhost 后再拿旧口令连就 1045），再 `make ch-init` + `make up` 对齐容器 env。本机已把三个账号轮换到随机值，历史提交里那个占位口令自此在任何环境都无效 |
 | （M1-11）压测把"资源上限"变成了被测口径的一部分 | 跳转 P99 在 200 连接饱和区超标（52–74ms），而 jump 容器 RSS 实测顶在 502–509MiB/512MiB；ClickHouse 在 2GiB 上限下批量插入 10M 行直接撞 `Code: 241 Memory limit exceeded`。这些不是脚本 bug，是 3.9G 时代收出来的限额（本表 M1-10 内存行）在 8G 宿主机上暴露出来的真实边界 | 处理原则=**如实记录、不为过指标而绕过**：聚合基准改跑在真实积累的 1659 万行明细上（比造数更有说服力），写入吞吐改用 100k 行/批测得 1.06M rows/s；G1+768M 变体做对照实验后**证明 GC 不是尾部主因**，因此默认配置维持不动。内存预算重排列为 M2 任务（§6） |
 | （M1-11）wrk 的状态断言写在 Lua 钩子里不可信 | 本机 wrk 4.2.0 的 `response()` 钩子实测不被调用（`done()` 里计数恒为 0，而 `summary.requests` 正常），若照此断言"全部 302"会得到假的绿灯 | 状态判定改为**服务侧交叉验证**：`xsl_jump_requests_total{outcome="found"}` 的轮次增量对齐客户端请求数，非 found 增量必须为 0；Lua 里只保留随机取码与固定 Host 头。另记一个语法坑：Lua 表构造里数字键必须写 `[302]`，写 `302 = 0` 直接语法错误，首轮因此**空跑 3×60s**（QPS 0.00 才发现） |

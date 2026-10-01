@@ -2,7 +2,7 @@
 
 演出票务场景的短链 + 渠道归因平台：主办方在抖音/微博/微信分发一条短链，用户点击后 302 直达购票页并携带归因参数，点击事件经消息链路进列式库，渠道看板据此区分有效点击与疑似刷量。
 
-个人项目，单机定位：全部拓扑跑在一台 16G PC 的 Docker Compose 上，容量与 SLO 均以"单机可证伪"为口径。设计与计划的权威来源是 [docs/DESIGN.md](docs/DESIGN.md)（v2.2）与 [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)，本 README 只讲怎么跑起来。
+个人项目，单机定位：全部拓扑跑在一台 16G PC 的 Docker Compose 上，容量与 SLO 均以"单机可证伪"为口径。设计与计划的权威来源是 [docs/DESIGN.md](docs/DESIGN.md)（v2.2.2）与 [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md)，本 README 只讲怎么跑起来。
 
 ## 架构速览
 
@@ -29,7 +29,7 @@
 | `deploy/` | `compose/`（编排、nginx、MySQL/ClickHouse 初始化、`overrides/` 压测叠加、`.env` 不入库）、`docker/`（应用镜像 Dockerfile）、`maven/`（构建 settings） |
 | `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
 | `bench/` | 压测脚本、wrk lua、`reports/` 存档（DESIGN 1.3 的数字只引用这里） |
-| `docs/` | `DESIGN.md`、`DEVELOPMENT_PLAN.md`、`iterations/ITER-<M>.md` + 模板 |
+| `docs/` | `DESIGN.md`（设计）、`DEVELOPMENT_PLAN.md`（计划与工程约定）、`PROBLEMS_AND_SOLUTIONS.md`（关键问题与解决方案，跨里程碑沉淀）、`iterations/ITER-<M>.md`（每期流水）+ 模板 |
 
 依赖方向由 maven-enforcer 强制：`sl-jump` 不得依赖 `sl-admin`/`sl-gateway`（数据面独立性）。
 
@@ -107,4 +107,6 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test' | sudo tee -a /etc/hosts
 
 ## 当前状态
 
-M1（跳转最小闭环 + 事件链路）已收口，tag `m1`。唯一顺延项是 **M1-11 压测存档**：本机 Docker Desktop 内存 3.9G，全栈已占 3.3G，压测前需先提到 ≥8G，否则测的是资源争抢而非链路吞吐——`bench/reports/` 目前为空，[docs/DESIGN.md](docs/DESIGN.md) §1.3 的实测列里吞吐/延迟类指标显式标注"待 M1-11"，其余实测值均来自上述脚本的存档输出。
+M1（跳转最小闭环 + 事件链路）**十三项任务全部完成并有实测存档**，收口 tag `m1`（仅本地）。M1-11 压测在收口次日补跑（前提：Docker VM 内存提到 8G、`brew install wrk`），存档在 `bench/reports/`；[docs/DESIGN.md](docs/DESIGN.md) §1.3 与 §8.1-A 的"实测"列只引用这些文件，**未达标项（200 连接饱和区 P99、签发 TPS）也照实写着**并附瓶颈分析与复测路径。
+
+下一步是 M2 动态路由与防刷，本期实测暴露的三项待办见 [docs/iterations/ITER-M1.md](docs/iterations/ITER-M1.md) §6：跳转 P99 与饱和区治理、资源预算重排（jump RSS 顶在 512MiB 限额、ClickHouse 2GiB 下批量插入撞 Code 241）、签发链路换工具复测。

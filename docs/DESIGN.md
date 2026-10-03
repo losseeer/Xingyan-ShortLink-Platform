@@ -418,7 +418,12 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 ### 6.3 归因数据链路
 
 1. **实时写入**：跳转服务 → Kafka topic `shortlink-click`（分区键 `short_code`，同链接事件保序）。发送失败进本地磁盘重试队列（WAL），不阻塞响应。
+   M2-22 起分区数 1 → 4：并行消费的单位是分区，1 分区把 consumer 的追赶吞吐硬顶成单线程。
+   扩容不改变正确性——producer 按 `short_code` 选分区，**同一链接的事件仍落在同一分区内保持有序**，跨链接之间本来就没有顺序语义；幂等仍由 `event_id` + ReplacingMergeTree 消化（第 2 点）。
+   M2-21 起发送侧带攒批（`linger.ms=5`、`batch.size=64KB`、`compression.type=lz4`）：`send()` 是异步的，攒批发生在 sender 线程，**不给跳转加延迟**；请求路径上唯一可能被卡的点仍是缓冲区满时的 `max.block.ms`（保持 1000ms，超时即转 WAL）。
 2. **异步聚合**：Consumer 批量拉取（`max.poll` + 手动提交 offset，at-least-once），按 `event_id` 幂等去重后写 ClickHouse `click_event`；分钟级物化到 `click_stat_minute`。
+   M2-21/22 的批量口径：`max.poll.records` 500 → 5000、`listener.concurrency` = 分区数（4）、写入请求带 `async_insert=1&wait_for_async_insert=1&busy_timeout_ms=200`。
+   **`wait_for_async_insert` 必须是 1**：提交 offset 的前提是"数据已落库"，若让 POST 先返回、服务端后台再刷盘，进程或容器重启后这段数据既不在 CH 也回不来（offset 已提交），1.3 的 0.0000% 丢失率就成了假数字。也就是说这里换的是 **part 数量与请求次数**，不换持久性语义。
 3. **归因回传**：每 5 分钟按 `(campaign_id, channel_id, minute)` 聚合推送宣发数据平台 API；宣发平台以 `xy_click_id` 与订单归因字段 Join，生成"渠道→点击→转化"漏斗。回传带 `batch_id + 校验和`，平台侧幂等。
 
 ### 6.4 统计服务

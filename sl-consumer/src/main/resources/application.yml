@@ -22,6 +22,8 @@ spring:
     listener:
       ack-mode: manual_immediate
       type: batch
+      # M2-22：并行度=分区数才有意义（1 分区时开多少线程都只有一个在拉）；配 4 分区取 4。
+      concurrency: ${XSL_CONSUMER_CONCURRENCY:4}
   jackson:
     property-naming-strategy: SNAKE_CASE
 

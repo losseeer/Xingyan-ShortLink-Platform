@@ -26,6 +26,7 @@ bash bench/run-jump-attribution.sh             # 负载进行中逐容器采 CPU
 bash bench/run-kafka-bench.sh                  # Kafka 两段测：停 consumer 测堆积 → 放开测追赶
 bash bench/run-clickhouse-bench.sh             # ClickHouse 明细量级与聚合查询基准
 bash bench/run-create-bench.sh                 # 短码签发 TPS + 唯一性
+bash bench/run-ratelimit-bench.sh              # 频控 Lua 基线（DESIGN 8.1-A）：redis-benchmark 跑 jump 同一份脚本
 ```
 
 可调环境变量：`ROUNDS` / `DURATION` / `THREADS` / `CONNS`（跳转）、`CURVE_POINTS` / `CURVE_DURATION`（曲线）、`DIAG_CONNS` / `DIAG_DURATION`（归因）、`N_OUTAGE`（堆积）、`CH_ROWS`（聚合）、`N_CREATE` / `CREATORS`（签发）。
@@ -46,6 +47,13 @@ bash bench/run-create-bench.sh                 # 短码签发 TPS + 唯一性
    一个把已经越线的 c=32（P99 116ms）算进"达标段"——都在 commit 前改回存档原值。
    单位也要核对：wrk 会把亚毫秒自己打成 `us`，按 `m?s` 抠字段会整体失配并把整行摘要落盘
    （`parse-wrk.py` 现统一归一成 ms，`run-jump-loadcurve.sh` 改按字段名取值而不是贪婪 `.*`）。
+9. **目标必须自带判定条件**：一个没有负载/并发口径的阈值数字是无法判定达不达标的。已经踩到两次同构的坑：
+   跳转延迟的 `P99<50ms` 漏写"在多大负载上判"（M2-00，饱和区误判成未达标），频控 Lua 的 `≥3 万次/s`
+   漏写"几路连接、是否流水线"（M2-14，同一脚本单连接 2.78 万、10 连接 16.7 万，差 6 倍）。
+   新写目标时把条件写进目标列本身；条件确实没写的历史目标，就把各档都报出来，不挑最好看的那个。
+10. **p99 至少要 40s 一档**：并发曲线用 20s 档位时，c=4 首点读到 p99 50.79ms，同一天同参数复跑 40s
+    得到 5.36ms——差的 45ms 全是采样噪声（分布尾部样本不足 + 上一档残留）。短档只适合看吞吐趋势，
+    不适合判延迟分位。
 
 ## 目录
 

@@ -4,11 +4,14 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
@@ -28,13 +31,22 @@ import java.util.concurrent.atomic.AtomicLong;
 @Component
 public class RateLimiter {
 
-    private static final RedisScript<Long> WINDOW_COUNT = new DefaultRedisScript<>("""
-            local n = redis.call('INCR', KEYS[1])
-            if n == 1 then
-              redis.call('EXPIRE', KEYS[1], ARGV[1])
-            end
-            return n
-            """, Long.class);
+    /**
+     * 脚本正文在 {@code resources/lua/rate_limit_window.lua}——那份文件同时被
+     * {@code bench/run-ratelimit-bench.sh} 拿去跑基线（原样、含注释，所以两边 sha 一致），
+     * 被测的就是线上跑的这份。
+     */
+    private static final RedisScript<Long> WINDOW_COUNT = windowCountScript();
+
+    private static RedisScript<Long> windowCountScript() {
+        // 显式按 UTF-8 读：脚本注释里有中文，编码读错会让送进 Redis 的正文与仓库里的不是一份东西
+        // （Spring Data Redis 3.3 起没有 ResourceScriptSource / setScriptCharset 可用）。
+        try (var in = new ClassPathResource("lua/rate_limit_window.lua").getInputStream()) {
+            return new DefaultRedisScript<>(new String(in.readAllBytes(), StandardCharsets.UTF_8), Long.class);
+        } catch (IOException e) {
+            throw new IllegalStateException("频控 Lua 脚本 lua/rate_limit_window.lua 加载失败", e);
+        }
+    }
 
     /**
      * @param counted   本窗口内已累计的请求数（含本次）

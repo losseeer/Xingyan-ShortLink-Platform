@@ -52,6 +52,18 @@ M2-00（资源预算重排 + 跳转 P99 治理）已单独收口（2026-10-03，
 | M2-14 | **频控 Lua 基线 + 跳转不退化** | `bench/run-ratelimit-bench.sh`：`redis-benchmark --eval` 在 redis 容器内跑同一份脚本（同机回环口径如实声明）；复跑 `run-jump-loadcurve.sh` | DESIGN 8.1-A 的「频控 Lua ≥3 万次/s」由"未测"改为实测值 + 存档；loadcurve 目标负载段 P99 相对 M2-00 基线（21.08ms@5,002 QPS）退化 <20%，否则如实记录并归因 | M2-11 | 0.5 天 |
 | M2-15 | **防刷收口** | `make verify` 全量；重跑 `accept-m1-04/06/07/09/10`（本期动了 429、`risk_score`、ipHash 三处契约相关面）；顺路改名 `sharding-jump.yaml`→`sharding.yaml`、`ShortCodePoolServiceTest`→`ShortCodePoolServiceLiveTest`；ITER-M2 §2/§3/§4 回填 | 旧验收全绿或有偏差记录；ITER-M2 里每个数字都能点达到 `bench/reports/` 的具体行 | 全部 | 0.5 天 |
 
+**M2-01 事件链批量化**（2026-10-03 细化；由 M2-00 的归因直接引出——负载中 ClickHouse ≈1.9 核、停 consumer 后同一入口从 ~14k 跳到 24,525 QPS，上限在写入侧不在数据面）
+
+| # | 任务 | 内容与交付物 | 验收动作 | 依赖 | 估时 |
+|---|---|---|---|---|---|
+| M2-20 | **改动前先复采基线** | 同一台机器、安静时段跑齐三份：`run-jump-loadcurve.sh`（chain-live 上限）、`run-kafka-bench.sh`（堆积与追赶速率）、`run-jump-attribution.sh`（逐容器 CPU + CH merges/part 数）。producer 参数、批次大小、分区数**全部维持现状** | 三份存档齐备且 `env_snapshot` 与后续复采同档（loadavg/容器内存合计相近），否则不具备对照资格 | M2-15 | 0.3 天 |
+| M2-21 | **ClickHouse 写入批量化** | ① consumer `max.poll.records` 500→5000（`XSL_CH_BATCH_SIZE`）+ `fetch.min.bytes`；② 写入 URL 加 `async_insert=1&wait_for_async_insert=1&async_insert_busy_timeout_ms=200`（**wait 必须为 1**，见 ITER-M2 §5 的丢失率论证）；③ jump 侧 producer 参数化：`linger.ms`/`batch.size`/`compression.type=lz4`/`buffer.memory`（经 compose 注入，默认值保守） | 每 5,000 行发起的 HTTP POST 次数相对改前下降 ≥5×；`system.parts` 增量与 `system.merges` 排队数下降；`accept-m1-09` 仍 0 丢失、WAL 演练通过 | M2-20 | 0.5 天 |
+| M2-22 | **分区与消费并行** | topic `shortlink-click` 1→4 分区（`kafka-init` 服务改 + 已存在 topic 的 `--alter` 幂等说明）；consumer `Concurrency` 2→4。点击事件行间无先后依赖、去重靠 `event_id`+ReplacingMergeTree，故按 `short_code` 分区带来的跨分区乱序不影响正确性（这条要在 DESIGN 6.3 显式记下，别让它成为隐含假设） | 追赶速率随并行度的变化有存档（1/2/4 三档）；同一 event_id 双投递经 FINAL 仍恰为 2 行 | M2-21 | 0.5 天 |
+| M2-23 | **复采与判定** | 与 M2-20 **同方法**复采三份；给出 chain-live QPS 上限、P99@目标负载、CH CPU、merge 排队、丢失率五个量 | 上限 ≥20k 且 P99@≥2000 QPS 相对 M2-00/频控基线不退化；没达到就照实写"为什么没到"，不把口径改成能过的样子 | M2-21/22 | 0.5 天 |
+| M2-24 | **回写与收口** | DESIGN 6.3（批量语义与乱序）、8.1-A（吞吐/延迟行与限制说明）、8.3（Redis/Kafka 降级表若受影响）；重跑 `accept-m1-09`（动的是它整条链路）+ `accept-m2-13`；ITER-M2 §2/§3/§4/§6 回填 | 每个数字可点达到 `bench/reports/` 的具体行；改前/改后两组存档都在仓库里（ITER-M2 §5 的"改配置必须留前后两组"纪律） | 全部 | 0.3 天 |
+
+**本期明确不做**：不调 ClickHouse 的 2G 内存上限（M2-00 已把它定为被测口径的一部分，改了历史数字就不可比）；不引入 Kafka exactly-once（8.4 已选定 at-least-once + 读时去重，换语义的收益抵不上事务标记的复杂度）；一次只动一个杠杆并单独存档——M2-00 的教训是十个变量一起改等于什么都没测出来。
+
 **M3（+3 周）归因闭环与看板**：
 outbox 同步器 + `version` 强校验通道｜归因回传 mock 宣发平台（batch_id + 校验和幂等）｜**Vue 3 看板**：链接列表 / 渠道漏斗 / 双指标三页（Element Plus + ECharts，同源反代）｜8.3 降级演练全表（逐条 docker stop 存档）｜多域名切换演练｜端到端对账脚本 <2%。
 出口标准 + tag `m2`/`m3` 同 M1-12 模式。

@@ -22,9 +22,12 @@ check() { if [[ "$2" == "$3" ]]; then echo "PASS $1 ($3)"; ((pass++)); else echo
 
 # 1) 创建带归因的链接（origin 带 query+fragment，顺带证明拼接插在 # 前）
 RUN=$(python3 -c 'import time;print(int(time.time()))')
+# rate_limit_per_minute 给到 10 万：本脚本要在一分钟内对同一 code 打 1000+ 击（M2-11 起
+# 频控默认 60 次/分钟/来源 IP，不给这个字段就会从第 61 击起全变 429，测的就不是链路了）。
 BODY=$(cat <<JSON
 {"origin_url":"https://mock.ticketsales.test/e2e-m109?ticket=1#top",
- "channel_id":"c-m109","campaign_id":"p-m109-$RUN","promoter_id":"pr-7","redirect_type":1}
+ "channel_id":"c-m109","campaign_id":"p-m109-$RUN","promoter_id":"pr-7","redirect_type":1,
+ "rate_limit_per_minute":100000}
 JSON
 )
 CREATED=$(curl -s -X POST "$ADMIN/api/v1/links" -H "Content-Type: application/json" \
@@ -139,4 +142,5 @@ for DB in xsl_00 xsl_01; do
     "DELETE FROM short_link WHERE short_code='$CODE'; DELETE FROM link_route WHERE short_code='$CODE'; DELETE FROM code_tenant_index WHERE short_code='$CODE'; DELETE FROM short_code_pool WHERE short_code='$CODE'; DELETE FROM outbox WHERE entity_id='$CODE';" 2>/dev/null
 done
 docker exec xsl-redis-1 redis-cli DEL "sl:r:$CODE" "sl:r:nx:$CODE" "sl:code:$CODE" "sl:cnt:$CODE" >/dev/null
+for k in $(docker exec xsl-redis-1 redis-cli KEYS "sl:rl:$CODE:*" | tr -d '\r'); do docker exec xsl-redis-1 redis-cli DEL "$k" >/dev/null; done
 [[ $fail -eq 0 ]]

@@ -35,9 +35,12 @@ $COMPOSE exec -T nginx nginx -t >/dev/null 2>&1 || { echo "nginx 配置未就绪
 curl -s -m 5 -o /dev/null "http://$IP:$PORT/healthz" || { echo "nginx :$PORT 不可达"; exit 1; }
 
 RUN=$(date +%s)
+# C 段要在滚动重启窗口里从同一来源 IP 打 5000+ 击，必须显式放宽频控阈值（M2-11 默认 60 次/分钟）；
+# 频控本身的可证伪性由 scripts/accept-m2-13.sh 负责，不在本脚本里顺带测。
 BODY=$(cat <<JSON
 {"origin_url":"https://mock.ticketsales.test/m110?seat=A#p",
- "channel_id":"c-m110","campaign_id":"p-m110-$RUN","promoter_id":"pr-1","redirect_type":1}
+ "channel_id":"c-m110","campaign_id":"p-m110-$RUN","promoter_id":"pr-1","redirect_type":1,
+ "rate_limit_per_minute":100000}
 JSON
 )
 CREATED=$(curl -s -X POST "$ADMIN_DIRECT/api/v1/links" -H 'Content-Type: application/json' \
@@ -151,9 +154,12 @@ cleanup() {
        DELETE FROM code_tenant_index WHERE short_code='$CODE';
        DELETE FROM short_link WHERE short_code='$CODE';
        DELETE FROM short_code_pool WHERE short_code='$CODE';
-       DELETE FROM outbox WHERE entity_id='$CODE';" >/dev/null 2>&1
+       DELETE FROM outbox WHERE aggregate_id='$CODE';" >/dev/null 2>&1
   done
   docker exec xsl-redis-1 redis-cli DEL "sl:r:$CODE" "sl:r:nx:$CODE" "sl:cnt:$CODE" "sl:code:$CODE" >/dev/null 2>&1
+  for k in $(docker exec xsl-redis-1 redis-cli KEYS "sl:rl:$CODE:*" | tr -d '\r'); do
+    docker exec xsl-redis-1 redis-cli DEL "$k" >/dev/null 2>&1
+  done
   curl -s -m 20 -u "$CH_CRED" 'http://127.0.0.1:8123/' \
     --data-binary "ALTER TABLE xsl.click_event DELETE WHERE short_code='$CODE'" >/dev/null 2>&1
   rm -f /tmp/xsl-m110-load-*.txt /tmp/xsl-m110-load.txt

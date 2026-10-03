@@ -43,7 +43,10 @@ insert_route() { # insert_route <code> <json>
 cleanup() {
   local in=$(printf "'%s'," "${CODES[@]}"); in="(${in%,})"
   $MYSQL -e "DELETE FROM xsl_00.link_route WHERE short_code IN $in; DELETE FROM xsl_01.link_route WHERE short_code IN $in;" >/dev/null 2>&1
-  for c in "${CODES[@]}"; do $RCLI DEL "sl:r:$c" "sl:r:nx:$c" "sl:cnt:$c" > /dev/null; done
+  for c in "${CODES[@]}"; do
+    $RCLI DEL "sl:r:$c" "sl:r:nx:$c" "sl:cnt:$c" > /dev/null
+    for k in $($RCLI KEYS "sl:rl:$c:*" | tr -d '\r'); do $RCLI DEL "$k" > /dev/null; done
+  done
 }
 trap cleanup EXIT
 

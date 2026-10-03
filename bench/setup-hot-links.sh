@@ -25,6 +25,9 @@ def signed(i):
     body = json.dumps({
         "origin_url": f"https://mock.ticketsales.test/bench/{run}-{i}",
         "channel_id": "ch-bench", "campaign_id": campaign, "promoter_id": f"pr-{i % 50}",
+        # 热码在压测里每个 (code, ip) 会远超 60 次/分钟。频控仍留在被测路径里（这样 P99 数字
+        # 含它的真实开销），只是把阈值抬到不会误拦的量级——否则测出来的"吞吐"其实是一堆 429。
+        "rate_limit_per_minute": 100000,
         "redirect_type": 1}).encode()
     ts = str(int(time.time() * 1000))
     nonce = f"bench-{run}-{i}"

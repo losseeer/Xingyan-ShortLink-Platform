@@ -64,6 +64,22 @@ M2-00（资源预算重排 + 跳转 P99 治理）已单独收口（2026-10-03，
 
 **本期明确不做**：不调 ClickHouse 的 2G 内存上限（M2-00 已把它定为被测口径的一部分，改了历史数字就不可比）；不引入 Kafka exactly-once（8.4 已选定 at-least-once + 读时去重，换语义的收益抵不上事务标记的复杂度）；一次只动一个杠杆并单独存档——M2-00 的教训是十个变量一起改等于什么都没测出来。
 
+### 二-B、M2 动态路由主线（2026-10-03 细化）
+
+摸底发现三处"文档说做了、代码里其实没有"，本轮一并处理并记进 ITER-M2 §4：① `xsl.jump.mode` 只出现在注释里、没有任何 Bean 条件装配，**DESIGN 第十章承诺的"纯 302 回退开关"目前是假的**；② `route_rule` 有表、有分片配置，**Java 侧零引用**；③ outbox 只有写方（`LINK_CREATED/LINK_UPDATED`）没有同步方。
+
+| # | 任务 | 内容与交付物 | 验收动作 | 依赖 | 估时 |
+|---|---|---|---|---|---|
+| M2-30 | **口径先于代码** | 六处写进 DESIGN 6.2：特征表自维护 + 可配置（不引第三方 UA 库）、未知事实一律落 default（不误伤）、`mode` 开关做成真条件装配、`wx_urllink` 在本项目是 mock provider（不接真实微信 API）、`geo_province` 在离线库接入前恒为"未知"、mock 购票页落地为 nginx 静态回显（不建 Java 模块） | DESIGN diff 与本表一致；ITER-M2 §5 有对应决策条目 | M2-24 | 0.2 天 |
+| M2-31 | **route_rule 双轨** | `RouteConfig` 增 `rules`（编译产物进 `route_json`）；sl-admin 侧规则校验（condition_type/op/target_type 白名单、priority 非负、条数上限）+ 规则写入（`POST /links` 带 `rules[]`、`PUT /links/{code}/rules` 整体替换）+ 编译器（行式真源 → route_json，按 priority 升序）；版本递增与缓存回写沿用现路径 | `LinkServiceIntegrationTest` 扩展：存 3 条规则后 `route_json.rules` 有序、PATCH 后 version+1、非法 condition_type → 400、他租户 → 403；route_json 形状变了要重跑 `accept-m1-06` | M2-30 | 1 天 |
+| M2-32 | **UA/容器特征引擎** | sl-common `UaClassifier`：微信/QQ/抖音/微博/支付宝容器 + iOS/Android 设备 + 未知；特征表从配置加载（DESIGN 的"月度更新"在单机就是改配置不改代码）；jump 填上 ClickEvent 的 `device_type/os`（此前恒为空串） | 单测覆盖 ≥12 条真实 UA 样本；CH 里 `device_type/os` 不再为空（成为 M2-35 与 6.4 双指标的取数依据） | M2-30 | 0.5 天 |
+| M2-33 | **一级决策 + 中间页 + 真回退开关** | `DynamicRouteResolver`（priority 升序首条生效）；`@ConditionalOnProperty` 让 `xsl.jump.mode=direct302\|dynamic` 成为真开关（默认 dynamic，回退只改一个环境变量）；`h5/app_scheme/wx_urllink/intermediate` 四类 target；中间页由 jump 返回 200 HTML（带 `Cache-Control`），JS 用 `location.href=scheme` + 2.5s 内无 `visibilitychange/pagehide` 则降级 H5；`wx_urllink` 走 `UrlLinkProvider` 接口 + 本地 mock 实现 | 单测覆盖四类 target 与未识别 UA 落 default；`accept-m1-07` 在 dynamic 模式下 302 语义不变 | M2-31/32 | 1.5 天 |
+| M2-34 | **mock 购票页回显** | nginx 加 `mock.ticketsales.test` server：静态页回显 query + fragment（此前该 Host 落 default_server 被 444 掐断，302 之后浏览器只看到 DNS 错误） | `curl --resolve` 能看到回显；`make demo` 的 302 终点从死链变成可看点 | M2-33 | 0.3 天 |
+| M2-35 | **UA 重放测试集（M2 出口标准）** | `scripts/accept-m2-35.sh`：≥12 条真实 UA 逐条断言命中的 `target_type`、响应形态（302 / 200 中间页）、scheme 与 fallback、`device_type/os` 入库；外加"改一个 env 就回退 direct302"的开关验证 | 全绿即达成 M2 出口标准"UA 重放脚本全绿"；旧验收 `accept-m1-06/07/09/10` + `accept-m2-13` 全部重跑 | M2-33/34 | 0.7 天 |
+| M2-36 | **回写与收口** | DESIGN 6.2/6.4/8.5/1.3；ITER-M2 §2/§3/§4/§5/§6；README 演示章节（浏览器里能看到中间页降级） | 每个实测数字可点达到存档；偏差有记录 | 全部 | 0.3 天 |
+
+**本主线明确不做**：不接真实微信开放接口（无凭据，只留 provider 接口）；不引 yauaa/ua-parser（特征表自维护，代价是覆盖面窄，靠"未识别一律 default"保证不误伤）；不做 geo_province 的 IP 地理库（数据源缺失时该条件恒不匹配，与 IDC/代理库是同一件事，留给评分那格）；不写 outbox 同步器（M3 那一格，本轮沿用现路径直写 `route_json`）。
+
 **M3（+3 周）归因闭环与看板**：
 outbox 同步器 + `version` 强校验通道｜归因回传 mock 宣发平台（batch_id + 校验和幂等）｜**Vue 3 看板**：链接列表 / 渠道漏斗 / 双指标三页（Element Plus + ECharts，同源反代）｜8.3 降级演练全表（逐条 docker stop 存档）｜多域名切换演练｜端到端对账脚本 <2%。
 出口标准 + tag `m2`/`m3` 同 M1-12 模式。

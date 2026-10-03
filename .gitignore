@@ -21,3 +21,6 @@ docs/wiki/
 
 # 关键问题与解决方案：跨里程碑的个人复盘叙述不适合公开仓库，本机维护即可（内容仍可参考，但不进版本控制）
 docs/PROBLEMS_AND_SOLUTIONS.md
+
+# bench 的 python 解析件跑出来的字节码
+__pycache__/

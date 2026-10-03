@@ -42,3 +42,8 @@ management:
   metrics:
     tags:
       instance: ${XSL_INSTANCE:local}
+    distribution:
+      percentiles:
+        # M2-00 诊断插桩：把"服务端处理耗时"与 wrk 的端到端时延分开看，
+        # 才能判断 P99 的尾巴在 jump 里还是在链路（nginx/排队/同机争抢）上。
+        http.server.requests: 0.5,0.95,0.99,0.999

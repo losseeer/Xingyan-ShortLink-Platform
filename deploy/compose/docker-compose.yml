@@ -148,7 +148,10 @@ services:
   # 因为 nginx upstream 需要稳定的容器 DNS 名，且验收要 `docker kill xsl-jump-1` 按名逐个摘除。
   jump-1:
     image: xsl/jump:dev
-    mem_limit: 512m
+    # 512m 是 Docker VM 只有 3.9G 时收出来的值；实测 jump 常驻 473–509MiB 长期贴顶，
+    # 有被 OOM-kill 的风险。VM 提到 8G 后按 DESIGN 3.3 的口径给 768m（堆 = 55% ≈ 422M）。
+    # 注意：这消除的是稳定性隐患，M1-11/M2-00 两轮都证明它对 P99 无改善（见 ITER-M2 §4）。
+    mem_limit: 768m
     restart: always
     environment:
       <<: *app-env
@@ -167,7 +170,7 @@ services:
 
   jump-2:
     image: xsl/jump:dev
-    mem_limit: 512m
+    mem_limit: 768m
     restart: always
     environment:
       <<: *app-env

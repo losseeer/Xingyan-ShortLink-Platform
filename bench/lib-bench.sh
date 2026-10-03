@@ -73,8 +73,46 @@ host_facts() {
 EOF
 }
 
+# 环境快照：把"这台机器此刻测得准不准"写进每份报告头部。
+# 实测教训：宿主 16G 用满、loadavg 一度到 26（10 核）时，同一份曲线两次跑差 2–4 倍。
+# 没有这一栏，读者会把环境噪声误读成性能变化。用 python 解析而不是 awk——
+# awk 脚本嵌在 bash 双引号里转义极易出错（本机就踩了一次 syntax error）。
+env_snapshot() {
+  python3 - <<'PYX'
+import json, re, subprocess
+def sh(cmd):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True).stdout.strip()
+
+load = sh("sysctl -n vm.loadavg").strip("{} ")
+cores = sh("sysctl -n hw.ncpu")
+phys = sh("top -l1 -n0 | grep PhysMem | head -1")
+phys = re.sub(r"^\s*PhysMem:\s*", "", phys)
+total = used = 0.0
+for line in sh("docker stats --no-stream --format '{{.Name}}\t{{.MemUsage}}'").splitlines():
+    parts = line.split("\t")
+    if len(parts) < 2:
+        continue
+    # 字段名必须是 MemUsage：写成 MemoryUsage 时 docker 不报错、只输出空串，
+    # 于是这里的合计静默变成 0——正是 PS-18 说的"数字不对但不报错"。
+    v = parts[-1].split("/")[0]
+    m = re.match(r"([\d.]+)\s*(GiB|MiB|KiB|B)", v)
+    if not m:
+        continue
+    n = float(m.group(1)) * {"GiB": 1024, "MiB": 1, "KiB": 1 / 1024, "B": 1 / 1048576}[m.group(2)]
+    total += n
+    if parts[0].startswith("xsl-"):
+        used += n
+vm = float(sh("docker info --format '{{.MemTotal}}'")) / 1048576
+merges = sh("docker exec xsl-clickhouse-1 clickhouse-client --query 'SELECT count() FROM system.merges'")
+muts = sh("docker exec xsl-clickhouse-1 clickhouse-client --query 'SELECT count() FROM system.mutations WHERE NOT is_done'")
+print(f"- 宿主负载：loadavg {load}（{cores} 核）｜内存 {phys}")
+print(f"- 容器内存合计 {total:,.0f} MiB，其中 xsl 栈 {used:,.0f} MiB／Docker VM 上限 {vm:,.0f} MiB")
+print(f"- 事件链后台：ClickHouse 合并中 {merges or '?'} 个、未完成 mutation {muts or '?'} 个（非 0 时本轮数字不宜与静默态对比）")
+PYX
+}
+
 report_new() { # report_new <文件名后缀> —— 返回本轮报告路径；bench/reports/ 只增不改（见 DEVELOPMENT_PLAN）
   local f="$REPORT_DIR/$(date '+%Y-%m-%d-%H%M')-$1.md"
-  { echo "# 压测存档：$1"; echo; host_facts; echo; } > "$f"
+  { echo "# 压测存档：$1"; echo; host_facts; env_snapshot; echo; } > "$f"
   echo "$f"
 }

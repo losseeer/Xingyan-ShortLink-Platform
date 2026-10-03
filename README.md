@@ -107,6 +107,6 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test' | sudo tee -a /etc/hosts
 
 ## 当前状态
 
-M1（跳转最小闭环 + 事件链路）**十三项任务全部完成并有实测存档**，收口 tag `m1`（仅本地）。M1-11 压测在收口次日补跑（前提：Docker VM 内存提到 8G、`brew install wrk`），存档在 `bench/reports/`；[docs/DESIGN.md](docs/DESIGN.md) §1.3 与 §8.1-A 的"实测"列只引用这些文件，**未达标项（200 连接饱和区 P99、签发 TPS）也照实写着**并附瓶颈分析与复测路径。
+M1（跳转最小闭环 + 事件链路）**十三项任务全部完成并有实测存档**，收口 tag `m1`（仅本地）。M1-11 压测在收口次日补跑（前提：Docker VM 内存提到 8G、`brew install wrk`），存档在 `bench/reports/`；[docs/DESIGN.md](docs/DESIGN.md) §1.3 与 §8.1-A 的"实测"列只引用这些文件，**未达标项（签发 TPS、短码生成延迟）也照实写着**并附瓶颈分析与复测路径。
 
-下一步是 M2 动态路由与防刷，本期实测暴露的三项待办见 [docs/iterations/ITER-M1.md](docs/iterations/ITER-M1.md) §6：跳转 P99 与饱和区治理、资源预算重排（jump RSS 顶在 512MiB 限额、ClickHouse 2GiB 下批量插入撞 Code 241）、签发链路换工具复测。
+M2（动态路由与防刷）进行中，首项 **M2-00 资源预算重排 + 跳转 P99 治理已于 2026-10-03 收口**，见 [docs/iterations/ITER-M2.md](docs/iterations/ITER-M2.md)。它的结论主要是**测量口径**层面的：M1-11 在 200 连接（≈10× 目标负载）判"P99 未达标"，把 SLO 判定和容量上限混成了同一件事——在目标负载上（5,002 QPS）实测 P50 0.646ms／P99 21.08ms，**达标**；同时把尾延迟归因到事件链（负载中 ClickHouse ≈1.9 核，停 consumer 后同一入口 24,525 QPS），GC 假设已由对照实验证伪。剩下的 M2 待办：事件链批量化（M2-01）、频控主线、签发链路换工具复测。

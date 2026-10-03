@@ -114,4 +114,4 @@ M2（动态路由与防刷）进行中。**M2-00 资源预算重排 + 跳转 P99
 
 **防刷主线（M2-10…M2-15）同日收口**：Redis 窗口频控（`sl:rl:{code}:{iphash}:{slot}`，单脚本 INCR+首次 EXPIRE）命中返回 429 且**不消耗配额**；客户端 IP 只信 nginx 覆盖写入的 `X-Real-IP`（原来取 `X-Forwarded-For` 首元素，客户端可伪造 → 频控可绕、`ip_hash` 不可信）；被拦的击仍进事件流并记 `risk_score=25`；`access_limit` 补齐对账（Redis 权威值 → `link_route.access_used` 快照，管理面每 60s 回写），丢键后按快照重建而不是回到满额；Redis 停机时频控退化为进程内计数、跳转不跌零。端到端验收 `scripts/accept-m2-13.sh` 17/17，五套旧验收全绿，DESIGN 8.1-A 的「频控 Lua ≥3 万次/s」由未测转为实测（单连接 2.78 万/s、10 连接 16.7 万/s）。详见 [docs/iterations/ITER-M2.md](docs/iterations/ITER-M2.md)。
 
-剩下的 M2 待办：事件链批量化（M2-01，把跳转上限从 ~14k 抬到 ≥20k）、route_rule 双轨 + UA 路由引擎 + 中间页、行为评分规则表、签发链路换工具复测。
+剩下的 M2 待办：**M2-01 事件链批量化已于 2026-10-03 收口**（`async_insert(wait=1)` + 5000 行/批 + producer 攒批 + topic 1→4 分区：chain-live 平顶 12,185 → **18,193 QPS（+49%）**、追赶 29,578 → 41,223 events/s、事件链 CPU 2.17 → 0.92 核、丢失率全程 0.0000%；**≥20k 的目标未达成，差 9%**，瓶颈已移到数据面自身）。仍在待办：route_rule 双轨 + UA 路由引擎 + 中间页、行为评分规则表、签发链路换工具复测。

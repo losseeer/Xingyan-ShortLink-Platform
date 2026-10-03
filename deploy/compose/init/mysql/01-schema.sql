@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS xsl_00.link_route (
   short_code  VARCHAR(12)  NOT NULL,
   route_json  JSON         NOT NULL,
   version     BIGINT       NOT NULL DEFAULT 1,
+  access_used     INT      NOT NULL DEFAULT 0 COMMENT 'Redis 权威扣减的 MySQL 快照（DESIGN 8.4），对账回写',
+  access_used_at  DATETIME NULL     COMMENT '快照写入时刻，重建时的保守缓冲据此判断新鲜度',
   update_time DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (short_code)
 ) ENGINE=InnoDB;
@@ -153,4 +155,19 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = 'xsl_01' AND TABLE_NAME = 'short_link'
                   AND COLUMN_NAME = 'rate_limit_per_minute') = 0,
   'ALTER TABLE xsl_01.short_link ADD COLUMN rate_limit_per_minute INT NULL AFTER access_limit', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- access_limit 扣减的 MySQL 快照（M2-12 / DESIGN 8.4）：列在 link_route 而不是 short_link——
+-- 它按 short_code 分片，与 jump 自己的分片轴同轴，重建时 jump 用同一条路由就能读到；
+-- 且刻意不做进 route_json：那是带 version 的缓存契约，每分钟一次的写会把 L1/L2 全部打穿。
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = 'xsl_00' AND TABLE_NAME = 'link_route'
+                  AND COLUMN_NAME = 'access_used') = 0,
+  'ALTER TABLE xsl_00.link_route ADD COLUMN access_used INT NOT NULL DEFAULT 0 AFTER version, ADD COLUMN access_used_at DATETIME NULL AFTER access_used', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = 'xsl_01' AND TABLE_NAME = 'link_route'
+                  AND COLUMN_NAME = 'access_used') = 0,
+  'ALTER TABLE xsl_01.link_route ADD COLUMN access_used INT NOT NULL DEFAULT 0 AFTER version, ADD COLUMN access_used_at DATETIME NULL AFTER access_used', 'DO 0');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

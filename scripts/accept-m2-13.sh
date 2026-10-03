@@ -7,6 +7,7 @@
 #   E. 事件仍记录：被拦的击进 ClickHouse 且 risk_score=25（否则看板只看到流量凭空消失）
 #   F. 窗口滑过后恢复放行
 #   G. Redis 停机：跳转不跌零，频控退化为进程内计数并带 mode=local 指标（DESIGN 8.3）
+#   H. 配额对账（M2-12）：Redis 权威值镜像进 MySQL；丢键后按快照收口而不是回到满额
 # 前置：make images && make up（jump/admin 为含频控的镜像）。
 # 口径：断言一律走 nginx :80 真实入口；只有 B/G 用 8020 直连来模拟"另一个来源 IP"
 #       （直连时没有 nginx，X-Real-IP 由脚本自己给，正是用来验证 jump 侧的取值优先级）。
@@ -170,6 +171,38 @@ check "G2 进程内计数仍生效：阈值 2，第 3 次起 429" "429 429" "${G
 check "G3 降级样本可用 mode=local 单独查出" "yes" \
   "$(python3 -c "import sys;print('yes' if int(sys.argv[1]) >= 3 else 'no')" "${LOCAL:-0}")"
 note "xsl_jump_rate_limit_total{mode=\"local\"} 增量=$LOCAL"
+
+# ================= H. 配额对账与 Redis 丢键后的冷重建（M2-12）=================
+CODE_H=$(create_link 100000 5); CODES+=("$CODE_H")
+del_keys "$CODE_H"
+note "fixture H=$CODE_H（quota=5、频控放宽）：先正常消耗 3 次"
+H_PRE=()
+for i in 1 2 3; do H_PRE+=("$(status_of "$(req "$CODE_H")")"); done
+check "H1 消耗前 3 击正常 302" "302 302 302" "${H_PRE[*]}"
+check "H2 Redis 权威余数=2" "2" "$($RCLI GET "sl:cnt:$CODE_H" | tr -d '\r')"
+
+snapshot_of() { # snapshot_of <code> → link_route.access_used（两分片里取有值的那个）
+  for db in xsl_00 xsl_01; do
+    local v
+    v=$($MYSQL_EXEC -N -uroot -e "SELECT access_used FROM $db.link_route WHERE short_code='$1'" 2>/dev/null | tail -1)
+    [[ -n "$v" ]] && { echo "$v"; return; }
+  done
+  echo "-"
+}
+USED=-
+for _ in $(seq 30); do
+  sleep 3
+  USED=$(snapshot_of "$CODE_H")
+  [[ "$USED" == "3" ]] && break
+done
+check "H3 管理面对账把权威值镜像进 MySQL（access_used=3）" "3" "$USED"
+note "等待对账周期（默认 60s）实测耗时；指标 xsl_quota_reconcile_total 可查"
+
+del_keys "$CODE_H"    # 只删配额键，模拟 Redis 丢数据（路由缓存随后回源）
+REBUILD=()
+for i in 1 2 3; do s=$(status_of "$(req "$CODE_H")"); tally "$s"; REBUILD+=("$s"); done
+# 播种值 = 5 − 快照已用 3 − min(缓冲, 剩余额度 1/4=0) = 2 → 再放 2 次后 410
+check "H4 丢键后按快照收口（只再放 2 次，而不是回到满额 5 次）" "302 302 410" "${REBUILD[*]}"
 
 echo "== $pass passed, $fail failed =="
 exit $(( fail > 0 ? 1 : 0 ))

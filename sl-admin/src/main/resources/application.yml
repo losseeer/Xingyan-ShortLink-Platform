@@ -24,6 +24,12 @@ xsl:
     allowed-hosts: ${XSL_ALLOWED_HOSTS:mock.ticketsales.test,.xystage.test}
   link:
     base-domain: ${XSL_LINK_BASE_DOMAIN:xy1.test}
+  quota-reconcile:
+    # access_limit 的 Redis 权威值 → link_route.access_used 快照（DESIGN 8.4，M2-12）
+    enabled: ${XSL_QUOTA_RECONCILE:true}
+    interval-ms: ${XSL_QUOTA_RECONCILE_INTERVAL:60000}
+    initial-delay-ms: ${XSL_QUOTA_RECONCILE_DELAY:20000}
+    chunk: ${XSL_QUOTA_RECONCILE_CHUNK:500}
 
 management:
   endpoints:

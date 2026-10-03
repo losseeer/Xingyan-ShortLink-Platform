@@ -37,6 +37,9 @@ xsl:
     wal-dir: ${XSL_JUMP_WAL_DIR:./data/jump-wal}
     wal-replay-ms: ${XSL_JUMP_WAL_REPLAY_MS:15000}
     ip-salt: ${XSL_IP_SALT:local-dev-salt}
+    # Redis 键丢失时的冷重建缓冲（DESIGN 8.4「宁可少放不可超放」）：
+    # 播种值 = access_limit − 快照已用 − 本缓冲，缓冲要盖住一个对账周期内没进快照的扣减量。
+    access-rebuild-buffer: ${XSL_JUMP_CNT_REBUILD_BUFFER:100}
     # 频控（DESIGN 5.3 第 2 层）：链接可用 route_json.rate_limit_per_minute 覆盖全局阈值
     rate-limit:
       enabled: ${XSL_JUMP_RL_ENABLED:true}

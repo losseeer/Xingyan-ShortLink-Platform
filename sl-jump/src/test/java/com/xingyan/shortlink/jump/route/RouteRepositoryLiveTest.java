@@ -122,7 +122,8 @@ class RouteRepositoryLiveTest {
 
     @Test
     void accessLimitLuaDecrementExhausts() {
-        AccessCounter counter = new AccessCounter(redis);
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        AccessCounter counter = new AccessCounter(redis, jdbc, registry, 0);
         String code = "m7lim" + System.nanoTime() % 100000;
         usedCodes.add(code);
         redis.delete("sl:cnt:" + code);
@@ -130,6 +131,56 @@ class RouteRepositoryLiveTest {
         assertTrue(counter.tryConsume(code, 2));
         assertFalse(counter.tryConsume(code, 2), "第 3 次必须超限");
         assertEquals("0", redis.opsForValue().get("sl:cnt:" + code));
+        // 键不在时脚本先回 -2（不猜种子），调用方读快照后二次进入 —— M2-12 的冷重建协议
+        assertEquals(1.0, registry.get("xsl_jump_access_counter_total").tag("result", "rebuild")
+                .counter().count(), "首击应触发一次冷重建");
+    }
+
+    /** DESIGN 8.4 的方向盘：Redis 键丢了要按快照收口（宁可少放），不能回到满额（超放）。 */
+    @Test
+    void accessLimitRebuildsFromSnapshotInsteadOfFullQuota() {
+        String code = "m7rb" + System.nanoTime() % 100000;
+        insertRoute(code, 1);
+        jdbc.update("UPDATE link_route SET access_used = 9, access_used_at = NOW() WHERE short_code = ?", code);
+        redis.delete("sl:cnt:" + code);
+
+        AccessCounter counter = new AccessCounter(redis, jdbc, new SimpleMeterRegistry(), 1);
+        // 上限 10、快照已用 9 → 只剩 1 次；缓冲再被"剩余额度的 1/4"封顶 → 实际扣 0
+        assertTrue(counter.tryConsume(code, 10));
+        assertFalse(counter.tryConsume(code, 10), "重建后必须按快照收口，不能重新播种成满额");
+        assertEquals("0", redis.opsForValue().get("sl:cnt:" + code));
+    }
+
+    /** 缓冲是绝对次数口径，但绝不能把小配额链接一次打死：超过剩余额度 1/4 的部分要自动失效。 */
+    @Test
+    void rebuildBufferIsCappedAtQuarterOfRemainingSoSmallQuotasSurvive() {
+        String code = "m7bc" + System.nanoTime() % 100000;
+        insertRoute(code, 1);
+        jdbc.update("UPDATE link_route SET access_used = 0, access_used_at = NOW() WHERE short_code = ?", code);
+        redis.delete("sl:cnt:" + code);
+
+        AccessCounter counter = new AccessCounter(redis, jdbc, new SimpleMeterRegistry(), 100);
+        // 上限 10、已用 0 → 剩 10；min(100, 10/4=2) = 2 → 播种 8，首击后余 7
+        assertTrue(counter.tryConsume(code, 10));
+        assertEquals("7", redis.opsForValue().get("sl:cnt:" + code),
+                "播种值应为 10 − 0 − 2（缓冲被剩余额度封顶）");
+    }
+
+    /**
+     * "键不存在"有两种：计数器丢了（要按快照收口）与从没被点过的新链接（没有历史要保护）。
+     * 区分信号是 {@code access_used_at}——对账只在 Redis 键存在时回写，它是 NULL 就说明这条
+     * 链接从没消耗过配额。混为一谈的后果是每条新链接首击就被扣掉一个缓冲：
+     * accept-m2-13 的 D1 段实测把 quota=50 的链接点 3 次后余数只剩 35，就是这么来的。
+     */
+    @Test
+    void neverReconciledLinkSeedsFullQuota() {
+        String code = "m7nf" + System.nanoTime() % 100000;
+        insertRoute(code, 1);                       // access_used=0、access_used_at IS NULL
+        redis.delete("sl:cnt:" + code);
+
+        AccessCounter counter = new AccessCounter(redis, jdbc, new SimpleMeterRegistry(), 100);
+        assertTrue(counter.tryConsume(code, 3));
+        assertEquals("2", redis.opsForValue().get("sl:cnt:" + code), "全新链接该按满额播种：3 − 1");
     }
 
     private static boolean infraUp() {

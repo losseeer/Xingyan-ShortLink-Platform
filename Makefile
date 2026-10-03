@@ -24,7 +24,14 @@ devenv:
 		"$$(openssl rand -hex 16)" "$$(openssl rand -hex 16)" "$$(openssl rand -hex 12)" > $(DEVENV); \
 		echo "已生成 $(DEVENV)（随机口令，权限 0600）"; fi
 
-MYSQL_EXEC := $(COMPOSE) exec -T -e MYSQL_PWD=$(XSL_MYSQL_PASSWORD) mysql mysql -uroot
+# 口令不出宿主机 shell：MySQL 容器自己就有 MYSQL_ROOT_PASSWORD（compose 注入），
+# 所以让容器内的 shell 用它组 MYSQL_PWD —— make 回显的命令行里只剩变量名，
+# 容器内的进程参数里也不出现明文（`-p"$PW"` 那种写法会被 ps 看到）。
+# 旧写法 `-e MYSQL_PWD=$(XSL_MYSQL_PASSWORD)` 的问题：make 会回显展开后的 recipe，
+# 于是 `make db-init` 直接把口令打进终端（截图/贴日志就是泄露）。
+# 注意：这个 `sh -c '… "$@"' _` 形态只在 make 里可用（make 把整行交给 shell）；
+# bash 脚本里的 $MYSQL_EXEC 走的是无引号词分裂，塞不进引号，见 scripts/lib-devenv.sh 的注释。
+MYSQL_EXEC := $(COMPOSE) exec -T mysql sh -c 'exec env MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysql -uroot "$$@"' _
 REDIS_EXEC := $(COMPOSE) exec -T redis redis-cli
 
 # ClickHouse 应用账号：口令经 SQL 在运行时写入，仓库里没有 users.d 明文文件

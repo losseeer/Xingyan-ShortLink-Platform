@@ -27,7 +27,11 @@ for pair in "XSL_MYSQL_PASSWORD=$XSL_MYSQL_PASSWORD" "XSL_CH_PASSWORD=$XSL_CH_PA
 done
 : "${XSL_CH_USER:=xsl_app}"
 
-# 口令经 MYSQL_PWD 传入，不出现在进程参数里（-pxxx 会在 ps 与日志中可见）
+# 口令经 MYSQL_PWD 传入，不出现在进程参数里（-pxxx 会在 ps 与日志中可见）。
+# 这里与 Makefile 的 MYSQL_EXEC 形态**故意不同**：make 把整行交给 shell，可以用
+# `sh -c '… "$@"' _` 让容器自己读 MYSQL_ROOT_PASSWORD（这样连宿主机回显里都没有明文）；
+# 而 bash 脚本里 $MYSQL_EXEC 是无引号词分裂展开的，引号不会被重新解析，塞不进那种写法。
+# 脚本侧不泄露的前提是"没人 echo 这条命令、也没人开 set -x"——目前确实没有（已 grep 核对）。
 MYSQL_EXEC="$COMPOSE exec -T -e MYSQL_PWD=$XSL_MYSQL_PASSWORD mysql mysql"
 MYSQL_CLI="$MYSQL_EXEC -uroot"
 CH_CRED="$XSL_CH_USER:$XSL_CH_PASSWORD"

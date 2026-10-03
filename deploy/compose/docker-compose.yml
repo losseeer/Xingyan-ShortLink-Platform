@@ -78,13 +78,23 @@ services:
       timeout: 5s
       retries: 12
 
+  # M2-22：1 分区把 consumer 的并行度硬顶在 1（Kafka 的并发单位是分区）。4 分区对正确性无影响：
+  # producer 以 short_code 为 key，同一码仍落同一分区、码内顺序不变，跨码之间本无顺序语义；
+  # 重复投递仍由 event_id + ReplacingMergeTree 消化（DESIGN 8.4）。
+  # 分区"只增不减"与幂等判断都放进 ensure-topic.sh —— 直接串一条 `--alter --partitions`
+  # 会在已达标时退出 1，而这个一次性容器是 consumer 的 service_completed_successfully 前置条件。
   kafka-init:
     image: apache/kafka:3.8.1
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: ["/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9092",
-                 "--create", "--if-not-exists", "--topic", "shortlink-click", "--partitions", "1", "--replication-factor", "1"]
+    volumes:
+      - ./init/kafka/ensure-topic.sh:/ensure-topic.sh:ro
+    environment:
+      TOPIC: shortlink-click
+      PARTITIONS: "4"
+      REPLICAS: "1"
+    entrypoint: ["/bin/sh", "/ensure-topic.sh"]
     restart: "no"
 
   clickhouse:
@@ -193,6 +203,8 @@ services:
     environment:
       <<: *app-env
       SERVER_PORT: "8040"
+      # M2-22：并行度要在不重新构建镜像的前提下调档（A/B 三种并行度），所以走 compose 插值
+      XSL_CONSUMER_CONCURRENCY: ${XSL_CONSUMER_CONCURRENCY:-4}
     ports: ["8040:8040"]
     # 依赖 kafka-init「成功退出」而不只是 kafka「健康」：topic 不存在时 spring-kafka 容器
     # 启动即抛 ConfigException 并 crash-loop（Docker 重启后必现，本机实测 consumer Restarting）。

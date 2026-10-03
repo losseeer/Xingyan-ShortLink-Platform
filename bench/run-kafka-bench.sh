@@ -13,6 +13,16 @@ THREADS=${THREADS:-8}
 CONNS=${CONNS:-200}
 export BENCH_CODES_FILE="${BENCH_CODES_FILE:-$TMP_DIR/hot-codes.txt}"
 
+# 前置断言：consumer 必须在跑。本测第一段就要停掉它，如果不检查，"从一开始就没起来"
+# 与"被本测停掉"长得一模一样：追赶超时 → 吞吐算出几百 events/s、CH 零新增、丢失率 100%，
+# 数字看着像结论其实全是空跑（本机真出过一次：kafka-init 幂等写错让 consumer 永远起不来）。
+if [[ "$(docker inspect -f '{{.State.Running}}' xsl-consumer-1 2>/dev/null)" != "true" ]]; then
+  echo "FATAL：xsl-consumer-1 未在运行（先 make up；若 make up 没报错也要看 docker ps -a 里 kafka-init 的退出码）"
+  exit 1
+fi
+curl -s -m 5 -o /dev/null http://127.0.0.1:8040/actuator/health || {
+  echo "FATAL：consumer :8040 不可达，测出来的是空数"; exit 1; }
+
 log_end_offset() {
   # 用 kafka-get-offsets 直接取 LOG-END-OFFSET：--describe --all-topics 的列位在未消费分区上是 "-"，
   # 早先按 $5 解析取到 0，把"生产数"算成了 0（本机实测踩到）

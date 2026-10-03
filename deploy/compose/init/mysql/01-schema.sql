@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS xsl_00.short_link (
   redirect_type TINYINT      NOT NULL DEFAULT 1 COMMENT '1-302 2-中间页（不支持 301，见 5.2）',
   expire_time   DATETIME     NULL,
   access_limit  INT          NULL,
+  rate_limit_per_minute INT  NULL COMMENT '同一客户端 IP 每分钟可点数；NULL=用 jump 全局默认（DESIGN 5.3 第 2 层）',
   status        TINYINT      NOT NULL DEFAULT 0 COMMENT '0-正常 1-停用 2-封禁 3-待审核',
   review_remark VARCHAR(256) NULL,
   create_time   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -136,3 +137,20 @@ CREATE TABLE IF NOT EXISTS xsl_base.domain_pool (
   create_time DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (domain)
 ) ENGINE=InnoDB;
+
+-- ─── 幂等补列（M2 起）───
+-- 上面的 CREATE TABLE IF NOT EXISTS 对"已灌数据的老卷"不会补列，而 MySQL 8 没有
+-- ADD COLUMN IF NOT EXISTS，所以逐列用 information_schema 守卫 + PREPARE。
+-- 新库：CREATE 已带列，这里全部跳过；老库：`make db-init` 重放本文件即补齐。
+
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = 'xsl_00' AND TABLE_NAME = 'short_link'
+                  AND COLUMN_NAME = 'rate_limit_per_minute') = 0,
+  'ALTER TABLE xsl_00.short_link ADD COLUMN rate_limit_per_minute INT NULL AFTER access_limit', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = 'xsl_01' AND TABLE_NAME = 'short_link'
+                  AND COLUMN_NAME = 'rate_limit_per_minute') = 0,
+  'ALTER TABLE xsl_01.short_link ADD COLUMN rate_limit_per_minute INT NULL AFTER access_limit', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

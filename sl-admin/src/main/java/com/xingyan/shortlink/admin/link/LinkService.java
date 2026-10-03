@@ -89,6 +89,7 @@ public class LinkService {
             throw new BizException(ErrorCode.VALIDATION_FAILED, HttpStatus.BAD_REQUEST,
                     "access_limit must be positive");
         }
+        validateRateLimit(req.rateLimitPerMinute());
         if (req.expireTime() != null && req.expireTime().isBefore(LocalDateTime.now())) {
             throw new BizException(ErrorCode.VALIDATION_FAILED, HttpStatus.BAD_REQUEST,
                     "expire_time must be in the future");
@@ -98,7 +99,7 @@ public class LinkService {
         long id = idGenerator.nextId();
         RouteConfig snapshot = new RouteConfig(req.originUrl(), tenantId, redirectType,
                 req.expireTime(), req.accessLimit(), 0, 1,
-                req.channelId(), req.campaignId(), req.promoterId());
+                req.channelId(), req.campaignId(), req.promoterId(), req.rateLimitPerMinute());
         String routeJson = writeJson(snapshot);
 
         try {
@@ -128,6 +129,7 @@ public class LinkService {
         data.put("promoter_id", req.promoterId());
         data.put("expire_time", req.expireTime());
         data.put("access_limit", req.accessLimit());
+        data.put("rate_limit_per_minute", req.rateLimitPerMinute());
         data.put("status", 0);
         return data;
     }
@@ -136,7 +138,7 @@ public class LinkService {
         requireOwnership(tenantId, code);
         Map<String, Object> row = new LinkedHashMap<>(jdbc.queryForMap(
                 "SELECT id, short_code, origin_url, channel_id, campaign_id, promoter_id, "
-                        + "redirect_type, expire_time, access_limit, status, create_time "
+                        + "redirect_type, expire_time, access_limit, rate_limit_per_minute, status, create_time "
                         + "FROM short_link WHERE tenant_id = ? AND short_code = ?", tenantId, code));
         row.put("id", String.valueOf(row.get("id")));
         row.put("short_url", shortUrl(code));
@@ -153,26 +155,29 @@ public class LinkService {
             throw new BizException(ErrorCode.VALIDATION_FAILED, HttpStatus.BAD_REQUEST,
                     "access_limit must be positive");
         }
+        validateRateLimit(req.rateLimitPerMinute());
         if (req.expireTime() != null && req.expireTime().isBefore(LocalDateTime.now())) {
             throw new BizException(ErrorCode.VALIDATION_FAILED, HttpStatus.BAD_REQUEST,
                     "expire_time must be in the future");
         }
         Map<String, Object> current = jdbc.queryForMap(
-                "SELECT origin_url, redirect_type, expire_time, access_limit, status, "
+                "SELECT origin_url, redirect_type, expire_time, access_limit, rate_limit_per_minute, status, "
                         + "channel_id, campaign_id, promoter_id "
                         + "FROM short_link WHERE tenant_id = ? AND short_code = ?", tenantId, code);
         LocalDateTime expireTime = req.expireTime() != null ? req.expireTime() : toLocalDateTime(current.get("expire_time"));
         Integer accessLimit = req.accessLimit() != null ? req.accessLimit() : toInteger(current.get("access_limit"));
+        Integer rateLimit = req.rateLimitPerMinute() != null
+                ? req.rateLimitPerMinute() : toInteger(current.get("rate_limit_per_minute"));
         int status = req.status() != null ? req.status() : ((Number) current.get("status")).intValue();
 
         long version = nextRouteVersion(code);
         RouteConfig snapshot = new RouteConfig((String) current.get("origin_url"), tenantId,
                 ((Number) current.get("redirect_type")).intValue(), expireTime, accessLimit, status, version,
                 (String) current.get("channel_id"), (String) current.get("campaign_id"),
-                (String) current.get("promoter_id"));
+                (String) current.get("promoter_id"), rateLimit);
         String routeJson = writeJson(snapshot);
 
-        txWriter.updateCommitted(tenantId, code, expireTime, accessLimit, status, routeJson);
+        txWriter.updateCommitted(tenantId, code, expireTime, accessLimit, status, rateLimit, routeJson);
         jdbc.update("UPDATE link_route SET route_json = CAST(? AS JSON), version = ? WHERE short_code = ?",
                 routeJson, version, code);
         cacheRoute(code, routeJson);
@@ -181,6 +186,7 @@ public class LinkService {
         data.put("short_code", code);
         data.put("expire_time", expireTime);
         data.put("access_limit", accessLimit);
+        data.put("rate_limit_per_minute", rateLimit);
         data.put("status", status);
         data.put("route_version", version);
         return data;
@@ -265,6 +271,14 @@ public class LinkService {
 
     private static boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    /** 频控阈值（DESIGN 5.3 第 2 层）：null = 用 jump 的全局默认；给了就必须是正数。 */
+    private static void validateRateLimit(Integer rateLimitPerMinute) {
+        if (rateLimitPerMinute != null && rateLimitPerMinute <= 0) {
+            throw new BizException(ErrorCode.VALIDATION_FAILED, HttpStatus.BAD_REQUEST,
+                    "rate_limit_per_minute must be positive");
+        }
     }
 
     private static LocalDateTime toLocalDateTime(Object value) {

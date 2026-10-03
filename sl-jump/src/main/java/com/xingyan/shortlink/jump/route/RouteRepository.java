@@ -82,12 +82,23 @@ public class RouteRepository {
     }
 
     private Optional<RouteConfig> load(String code) {
-        String json = redis.opsForValue().get("sl:r:" + code);
+        // Redis 读失败要当成"未命中"而不是让请求抛穿（DESIGN 8.3：Redis 挂 → Caffeine 兜底 + 回源直读，
+        // 跳转成功率不跌零）。M2-11 之前只有写回侧做了保护，读侧靠 30s 的 L1 侥幸挡着。
+        String json = null;
+        boolean nullMarked = false;
+        try {
+            json = redis.opsForValue().get("sl:r:" + code);
+            if (json == null) {
+                nullMarked = Boolean.TRUE.equals(redis.hasKey("sl:r:nx:" + code));
+            }
+        } catch (Exception e) {
+            log.warn("[jump] Redis 不可读，本次直连 DB 回源 code={}: {}", code, e.toString());
+        }
         if (json != null) {
             hitRedis.increment();
             return parse(json);
         }
-        if (Boolean.TRUE.equals(redis.hasKey("sl:r:nx:" + code))) {
+        if (nullMarked) {
             hitRedis.increment();
             return Optional.empty();
         }
@@ -95,7 +106,11 @@ public class RouteRepository {
                 "SELECT route_json FROM link_route WHERE short_code = ?", String.class, code);
         if (rows.isEmpty()) {
             missNull.increment();
-            redis.opsForValue().setIfAbsent("sl:r:nx:" + code, "1", NULL_MARK_TTL);
+            try {
+                redis.opsForValue().setIfAbsent("sl:r:nx:" + code, "1", NULL_MARK_TTL);
+            } catch (Exception e) {
+                log.warn("[jump] 空值标记写失败（本次仍按 404 处理） code={}", code);
+            }
             return Optional.empty();
         }
         hitDb.increment();

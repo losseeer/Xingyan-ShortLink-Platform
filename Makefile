@@ -53,6 +53,9 @@ images:
 
 up:
 	$(COMPOSE) up -d --wait
+	# 重建 jump 容器会让容器 IP 变化，而数据面 upstream 是静态块（keepalive 需要稳定 DNS 名，
+	# nginx 只在启动/reload 时解析一次）——不 reload 就会对着旧 IP 打，全站 502。
+	@$(COMPOSE) exec -T nginx nginx -s reload 2>/dev/null || echo "nginx reload 跳过（容器未就绪）"
 
 down:
 	$(COMPOSE) down

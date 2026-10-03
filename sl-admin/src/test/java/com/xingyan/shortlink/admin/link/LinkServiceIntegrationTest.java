@@ -113,7 +113,13 @@ class LinkServiceIntegrationTest {
 
     private CreateLinkRequest req(String originUrl, String shortCode, LocalDateTime expire,
                                   Integer accessLimit, Integer redirectType) {
-        return new CreateLinkRequest(originUrl, "ch-wechat", "cp-autumn", "p-9", shortCode, expire, accessLimit, redirectType);
+        return req(originUrl, shortCode, expire, accessLimit, redirectType, null);
+    }
+
+    private CreateLinkRequest req(String originUrl, String shortCode, LocalDateTime expire,
+                                  Integer accessLimit, Integer redirectType, Integer rateLimitPerMinute) {
+        return new CreateLinkRequest(originUrl, "ch-wechat", "cp-autumn", "p-9", shortCode, expire,
+                accessLimit, redirectType, rateLimitPerMinute);
     }
 
     private Map<String, Object> createAndTrack(long tenant, CreateLinkRequest r) {
@@ -178,7 +184,7 @@ class LinkServiceIntegrationTest {
     @Test
     void rejectsInvalidPayload() {
         var noChannel = assertThrows(BizException.class, () -> service.create(TENANT_A,
-                new CreateLinkRequest(OK_URL, null, "cp1", null, null, null, null, null)));
+                new CreateLinkRequest(OK_URL, null, "cp1", null, null, null, null, null, null)));
         assertEquals(ErrorCode.VALIDATION_FAILED, noChannel.getErrorCode());
 
         var pastExpire = assertThrows(BizException.class,
@@ -188,6 +194,38 @@ class LinkServiceIntegrationTest {
         var badLimit = assertThrows(BizException.class,
                 () -> service.create(TENANT_A, req(OK_URL, null, null, 0, null)));
         assertTrue(badLimit.getMessage().contains("access_limit"));
+
+        var badRate = assertThrows(BizException.class,
+                () -> service.create(TENANT_A, req(OK_URL, null, null, null, null, 0)));
+        assertTrue(badRate.getMessage().contains("rate_limit_per_minute"));
+    }
+
+    /**
+     * M2-11：频控阈值要有真源（short_link 列）并随快照进 link_route 与 Redis 缓存。
+     * jump 只读缓存快照——这个字段不在快照里，链接级阈值就等于没实现（只能吃全局默认）。
+     */
+    @Test
+    void rateLimitPerMinuteRoundTripsThroughColumnRouteAndCache() {
+        Map<String, Object> data = createAndTrack(TENANT_A, req(OK_URL, null, null, null, null, 5000));
+        String code = (String) data.get("short_code");
+
+        Integer column = jdbc.queryForObject(
+                "SELECT rate_limit_per_minute FROM short_link WHERE tenant_id = ? AND short_code = ?",
+                Integer.class, TENANT_A, code);
+        assertEquals(5000, column);
+        String routeJson = jdbc.queryForObject(
+                "SELECT route_json FROM link_route WHERE short_code = ?", String.class, code);
+        assertEquals(5000, readJson(routeJson).path("rate_limit_per_minute").asInt(), routeJson);
+        assertEquals(5000, readJson(redis.opsForValue().get("sl:r:" + code))
+                .path("rate_limit_per_minute").asInt(), "缓存快照必须带阈值，否则 jump 读不到");
+
+        service.update(TENANT_A, code, new UpdateLinkRequest(null, null, null, 900));
+        assertEquals(900, readJson(redis.opsForValue().get("sl:r:" + code))
+                .path("rate_limit_per_minute").asInt());
+
+        service.update(TENANT_A, code, new UpdateLinkRequest(null, null, 0, null));
+        assertEquals(900, readJson(redis.opsForValue().get("sl:r:" + code))
+                .path("rate_limit_per_minute").asInt(), "PATCH 未给出该字段时保持原值（与 access_limit 同语义）");
     }
 
     @Test
@@ -238,7 +276,7 @@ class LinkServiceIntegrationTest {
         String code = (String) data.get("short_code");
         LocalDateTime future = LocalDateTime.now().plusDays(3).withNano(0);
 
-        service.update(TENANT_A, code, new UpdateLinkRequest(future, 5, null));
+        service.update(TENANT_A, code, new UpdateLinkRequest(future, 5, null, null));
         Map<String, Object> link = jdbc.queryForMap(
                 "SELECT * FROM short_link WHERE tenant_id = ? AND short_code = ?", TENANT_A, code);
         assertEquals(5, ((Number) link.get("access_limit")).intValue());
@@ -250,7 +288,7 @@ class LinkServiceIntegrationTest {
         assertEquals(2L, jdbc.queryForObject("SELECT version FROM link_route WHERE short_code = ?", Long.class, code));
         assertEquals(5, readJson(redis.opsForValue().get("sl:r:" + code)).path("access_limit").asInt());
 
-        service.update(TENANT_A, code, new UpdateLinkRequest(null, null, 1));
+        service.update(TENANT_A, code, new UpdateLinkRequest(null, null, 1, null));
         Map<String, Object> after = jdbc.queryForMap(
                 "SELECT * FROM short_link WHERE tenant_id = ? AND short_code = ?", TENANT_A, code);
         assertEquals(1, ((Number) after.get("status")).intValue());

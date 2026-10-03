@@ -1,6 +1,7 @@
 package com.xingyan.shortlink.jump;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -31,9 +32,12 @@ public class JumpController {
                     .location(URI.create(decision.location()))
                     .<String>build();
         }
-        return ResponseEntity.status(decision.status())
-                .contentType(MediaType.TEXT_HTML)
-                .body(landingPage(decision));
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(decision.status())
+                .contentType(MediaType.TEXT_HTML);
+        if (decision.retryAfterSeconds() > 0) {
+            builder = builder.header(HttpHeaders.RETRY_AFTER, String.valueOf(decision.retryAfterSeconds()));
+        }
+        return builder.body(landingPage(decision));
     }
 
     private static String landingPage(JumpDecision decision) {

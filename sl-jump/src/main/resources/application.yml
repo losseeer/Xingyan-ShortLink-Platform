@@ -8,6 +8,10 @@ spring:
     redis:
       host: ${XSL_REDIS_HOST:localhost}
       port: ${XSL_REDIS_PORT:6380}
+      # Lettuce 默认命令超时 60s、连接超时 10s：Redis 一挂，跳转就要在请求线程里等十几秒，
+      # 8.3 的"降级"就变成"卡死"。压到 500ms——正常路径用不到，只有故障时才付出这一次等待。
+      timeout: ${XSL_REDIS_TIMEOUT:500ms}
+      connect-timeout: ${XSL_REDIS_CONNECT_TIMEOUT:500ms}
   datasource:
     driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
     url: jdbc:shardingsphere:classpath:sharding-jump.yaml?placeholder-type=environment
@@ -33,6 +37,11 @@ xsl:
     wal-dir: ${XSL_JUMP_WAL_DIR:./data/jump-wal}
     wal-replay-ms: ${XSL_JUMP_WAL_REPLAY_MS:15000}
     ip-salt: ${XSL_IP_SALT:local-dev-salt}
+    # 频控（DESIGN 5.3 第 2 层）：链接可用 route_json.rate_limit_per_minute 覆盖全局阈值
+    rate-limit:
+      enabled: ${XSL_JUMP_RL_ENABLED:true}
+      window-seconds: ${XSL_JUMP_RL_WINDOW:60}
+      permits-per-window: ${XSL_JUMP_RL_PERMITS:60}
 
 management:
   endpoints:

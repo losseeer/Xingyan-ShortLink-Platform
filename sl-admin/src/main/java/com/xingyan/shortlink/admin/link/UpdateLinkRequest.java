@@ -8,5 +8,6 @@ import java.time.LocalDateTime;
 public record UpdateLinkRequest(
         LocalDateTime expireTime,
         Integer accessLimit,
-        Integer status) {
+        Integer status,
+        Integer rateLimitPerMinute) {
 }

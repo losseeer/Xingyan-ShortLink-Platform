@@ -28,10 +28,11 @@ public class LinkTxWriter {
     @Transactional
     public void createCommitted(long id, String code, CreateLinkRequest req, long tenantId, String routeJson) {
         jdbc.update("INSERT INTO short_link (id, short_code, origin_url, tenant_id, channel_id, campaign_id, "
-                        + "promoter_id, redirect_type, expire_time, access_limit, status) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                        + "promoter_id, redirect_type, expire_time, access_limit, rate_limit_per_minute, status) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
                 id, code, req.originUrl(), tenantId, req.channelId(), req.campaignId(), req.promoterId(),
-                req.redirectType() == null ? 1 : req.redirectType(), req.expireTime(), req.accessLimit());
+                req.redirectType() == null ? 1 : req.redirectType(), req.expireTime(), req.accessLimit(),
+                req.rateLimitPerMinute());
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("short_code", code);
         payload.put("origin_url", req.originUrl());
@@ -43,10 +44,10 @@ public class LinkTxWriter {
 
     @Transactional
     public void updateCommitted(long tenantId, String code, LocalDateTime expireTime, Integer accessLimit,
-                                int status, String routeJson) {
-        jdbc.update("UPDATE short_link SET expire_time = ?, access_limit = ?, status = ? "
-                        + "WHERE tenant_id = ? AND short_code = ?",
-                expireTime, accessLimit, status, tenantId, code);
+                                int status, Integer rateLimitPerMinute, String routeJson) {
+        jdbc.update("UPDATE short_link SET expire_time = ?, access_limit = ?, status = ?, "
+                        + "rate_limit_per_minute = ? WHERE tenant_id = ? AND short_code = ?",
+                expireTime, accessLimit, status, rateLimitPerMinute, tenantId, code);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("short_code", code);
         payload.put("route_json", readTree(routeJson));

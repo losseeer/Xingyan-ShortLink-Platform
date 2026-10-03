@@ -6,6 +6,8 @@ import com.xingyan.shortlink.common.event.ClickEvent;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
 import com.xingyan.shortlink.common.route.RouteConfig;
 import com.xingyan.shortlink.jump.event.ClickEventProducer;
+import com.xingyan.shortlink.jump.risk.ClientIdentity;
+import com.xingyan.shortlink.jump.risk.RateLimiter;
 import com.xingyan.shortlink.jump.route.RouteRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
@@ -13,25 +15,31 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.LocalDateTime;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * 纯 302 决议（M1-07 默认形态，M1-08/09 接线）：路由存在性 → status → 过期 → 次数上限
- * → 归因白名单拼接（AttributionParamMerger）→ ClickEvent 异步投递 → 302。
- * M2 动态路由在 JumpResolver 接口上加实现，DESIGN 第十章"纯 302 开关"即 direct302 形态为默认。
+ * 纯 302 决议（M1-07 形态，M1-08/09 接线，M2-11 插频控）。
+ * 步骤序按 DESIGN 5.2 v2.3.0：路由 → status/expire → <b>频控</b> → access_limit 扣减
+ * → 归因拼接 → ClickEvent → 302。
+ *
+ * <p>频控排在扣减之前：否则高频刷量能先把链接配额烧光（限流反成 DoS 面）；
+ * 排在存在性/status 之后：否则对随机码的探测会给每个猜测值建 60s 频控键。
+ * 命中频控的点击不发跳转、不扣配额，但<b>事件仍投递</b>（risk_score=+25），
+ * 否则看板只能看到"流量凭空消失"，看不到被拦掉的那部分。
  */
 @Service
 public class Direct302Resolver implements JumpResolver {
 
+    /** DESIGN 5.3 第 3 层给"超频"定的贡献分；评分层（M2 后续任务）交付前，这是 risk_score 唯一的非 0 来源。 */
+    static final int RISK_OVER_FREQUENCY = 25;
+
     private final RouteRepository routes;
     private final AccessCounter accessCounter;
+    private final RateLimiter rateLimiter;
     private final ClickEventProducer clickEvents;
     private final SnowflakeIdGenerator idGenerator;
     private final ObjectMapper mapper;
@@ -40,6 +48,7 @@ public class Direct302Resolver implements JumpResolver {
 
     public Direct302Resolver(RouteRepository routes,
                              AccessCounter accessCounter,
+                             RateLimiter rateLimiter,
                              ClickEventProducer clickEvents,
                              SnowflakeIdGenerator idGenerator,
                              ObjectMapper mapper,
@@ -47,6 +56,7 @@ public class Direct302Resolver implements JumpResolver {
                              @Value("${xsl.jump.ip-salt:local-dev-salt}") String ipSalt) {
         this.routes = routes;
         this.accessCounter = accessCounter;
+        this.rateLimiter = rateLimiter;
         this.clickEvents = clickEvents;
         this.idGenerator = idGenerator;
         this.mapper = mapper;
@@ -67,6 +77,14 @@ public class Direct302Resolver implements JumpResolver {
         if (rc.expireTime() != null && LocalDateTime.now().isAfter(rc.expireTime())) {
             return count(JumpDecision.of(HttpStatus.GONE, "短链已过期"));
         }
+
+        String ipHash = ClientIdentity.hash(ipSalt, ClientIdentity.ip(request));
+        RateLimiter.Decision limited = rateLimiter.check(code, ipHash, rc.rateLimitPerMinute());
+        if (!limited.allowed()) {
+            publish(buildEvent(code, rc, String.valueOf(idGenerator.nextId()), ipHash, request, RISK_OVER_FREQUENCY));
+            return count(JumpDecision.rateLimited("访问过于频繁，请稍后再试", limited.retryAfterSeconds()));
+        }
+
         if (rc.accessLimit() != null && !accessCounter.tryConsume(code, rc.accessLimit())) {
             return count(JumpDecision.of(HttpStatus.GONE, "短链访问次数已达上限"));
         }
@@ -87,21 +105,25 @@ public class Direct302Resolver implements JumpResolver {
         }
         AttributionParamMerger.Result merged =
                 AttributionParamMerger.merge(rc.originUrl(), attrs, idGenerator);
-        try {
-            clickEvents.publish(buildEvent(code, rc, merged, utm, request));
-        } catch (Exception e) {
-            registry.counter("xsl_jump_clickevent_total", "result", "build_error").increment();
-        }
+        publish(buildEvent(code, rc, merged.traceId(), ipHash, request, 0));
         return count(JumpDecision.redirect(merged.url()));
     }
 
-    private ClickEvent buildEvent(String code, RouteConfig rc, AttributionParamMerger.Result merged,
-                                  Map<String, String> utm, HttpServletRequest request) {
+    private void publish(ClickEvent event) {
+        try {
+            clickEvents.publish(event);
+        } catch (Exception e) {
+            registry.counter("xsl_jump_clickevent_total", "result", "build_error").increment();
+        }
+    }
+
+    private ClickEvent buildEvent(String code, RouteConfig rc, String traceId, String ipHash,
+                                  HttpServletRequest request, int riskScore) {
         ClickEvent ev = new ClickEvent();
         ev.setEventId(UUID.randomUUID().toString());
         ev.setShortCode(code);
         ev.setClickTime(System.currentTimeMillis() / 1000);
-        ev.setIpHash(request == null ? "" : sha256Truncated(ipSalt + "|" + clientIp(request)));
+        ev.setIpHash(ipHash);
         ev.setUserAgent(request == null ? "" : header(request, "User-Agent"));
         ev.setReferer(request == null ? "" : header(request, "Referer"));
         ev.setDeviceType("");
@@ -111,26 +133,27 @@ public class Direct302Resolver implements JumpResolver {
         ev.setChannelId(nullToEmpty(rc.channelId()));
         ev.setCampaignId(nullToEmpty(rc.campaignId()));
         ev.setPromoterId(nullToEmpty(rc.promoterId()));
-        ev.setTraceId(merged.traceId());
+        ev.setTraceId(traceId);
+        Map<String, String> utm = new LinkedHashMap<>();
+        if (request != null) {
+            request.getParameterMap().forEach((k, v) -> {
+                if (k.startsWith("utm_") && v != null && v.length > 0 && !v[0].isBlank()) {
+                    utm.put(k, v[0]);
+                }
+            });
+        }
         try {
             ev.setUtmParams(mapper.writeValueAsString(utm));
         } catch (Exception e) {
             ev.setUtmParams("{}");
         }
+        ev.setRiskScore(riskScore);
         ev.setTenantId(rc.tenantId());
         return ev;
     }
 
     private static void putIfPresent(Map<String, String> m, String key, String value) {
         if (value != null && !value.isBlank()) m.put(key, value);
-    }
-
-    private static String clientIp(HttpServletRequest r) {
-        String xff = r.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
-        }
-        return r.getRemoteAddr() == null ? "" : r.getRemoteAddr();
     }
 
     private static String header(HttpServletRequest r, String name) {
@@ -140,16 +163,6 @@ public class Direct302Resolver implements JumpResolver {
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;
-    }
-
-    /** 脱敏口径（DESIGN 8.5）：不留明文 IP，截断 16 hex 位足够 uniq 统计。 */
-    private static String sha256Truncated(String s) {
-        try {
-            byte[] d = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
-            return Base64.getEncoder().withoutPadding().encodeToString(d).substring(0, 16);
-        } catch (Exception e) {
-            return "";
-        }
     }
 
     private JumpDecision count(JumpDecision decision) {

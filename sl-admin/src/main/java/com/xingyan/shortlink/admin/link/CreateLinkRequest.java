@@ -13,5 +13,6 @@ public record CreateLinkRequest(
         String shortCode,
         LocalDateTime expireTime,
         Integer accessLimit,
-        Integer redirectType) {
+        Integer redirectType,
+        Integer rateLimitPerMinute) {
 }

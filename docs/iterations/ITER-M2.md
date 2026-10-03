@@ -12,13 +12,13 @@
 |---|---|---|---|
 | M2-00 资源预算重排 + 跳转 P99 治理 | ➕ 新增（来自 ITER-M1 §6） | ✅ 完成（2026-10-03） | 起点是 M1-11 的四个悬案：200 连接 P99 52.6–74.2ms、jump RSS 顶在 502–509MiB/512MiB、ClickHouse 2GiB 下批量插入撞 Code 241、签发 TPS 被压测客户端限住。收口结论：①「P99 未达标」是**判定负载用错**，在目标负载上达标（§3 首行）；② 尾巴归因到**事件链抢占 CPU**，GC 假设已证伪；③ jump `mem_limit` 512m→768m 作稳定性决定；④ 测量工具与纪律修了五处（§4）|
 | M2-01 事件链批量化（CH 批量写 + producer/consumer 调参） | ➕ 新增（由 M2-00 归因引出） | 未开工，排在频控主线之后 | 属于设计变更（批量语义、Kafka producer 参数、拉取节奏），按 M1 格式先出任务表再动代码；目标把全链路 QPS 上限从 ~8k 抬到 ≥20k 且 P99@目标负载不退化（§6） |
-| 防刷主线（频控 Lua + `access_limit` 原子扣减 + 对账） | ✅ M2 计划内 | **进行中**（M2-10…M2-14 已完成，M2-15 待做） | 细表在 [DEVELOPMENT_PLAN](../DEVELOPMENT_PLAN.md)「二-A」。顺序是用户定的：M2-00 收口后直接开这条，M2-01 事件链批量化靠后 |
+| 防刷主线（频控 Lua + `access_limit` 原子扣减 + 对账） | ✅ M2 计划内 | **✅ 收口（2026-10-03）** | M2-10…M2-15 全部完成，细表在 [DEVELOPMENT_PLAN](../DEVELOPMENT_PLAN.md)「二-A」。顺序是用户定的：M2-00 收口后直接开这条，M2-01 事件链批量化靠后 |
 | M2-10 口径先于代码（任务表 + DESIGN 回写） | ✅ 计划内（细化时新增） | ✅ 完成（2026-10-03，`9abec2e`） | 四处口径修正先落 DESIGN v2.3.0：频控提到扣减之前、本期做固定窗口而非"假滑动"、IP 只信 `X-Real-IP`、对账落管理面且快照独立成列 |
 | M2-11 频控 Lua + 429 + 降级 | ✅ 计划内 | ✅ 完成（2026-10-03，`c775781`） | `risk/RateLimiter`（单脚本 INCR+首次 EXPIRE）+ `risk/ClientIdentity`（IP 口径统一）；命中 429 + `Retry-After`、不扣配额、事件仍入库并记 `risk_score=25`；Redis 挂 → 进程内计数不退服 |
 | M2-12 access_limit 对账与冷重建 | ✅ 计划内 | ✅ 完成（2026-10-03，`4aa2d9c`） | `link_route.access_used/_at` 快照列（幂等 ALTER，老卷 `make db-init` 即补）+ sl-admin 每 60s 对账 + jump 冷重建按「上限−已用−缓冲」播种 |
 | M2-13 端到端验收脚本 | ✅ 计划内 | ✅ 完成（17/17） | `scripts/accept-m2-13.sh` A–H 段（含伪造 XFF 不可绕、丢键后不超放）；旧脚本清理补 `sl:rl:*`，打流类 fixture 显式给阈值 |
 | M2-14 频控 Lua 基线 + 跳转不退化 | ✅ 计划内 | ✅ 完成（2026-10-03） | DESIGN 8.1-A 最后一项"未测"清零：单连接 27,803/s、10 连接 166,852/s、50 连接 211,894/s；跳转侧 P99@目标负载复跑 5.36–20.61ms 仍达标 |
-| M2-15 契约回归 + 顺路改名 + ITER 回填 | ✅ 计划内 | ⏳ 待做 | 本期动了 429 状态码、`rate_limit_per_minute` 契约、ipHash 取值口径、`risk_score` 语义 → 必须全量重跑 accept-m1-04/06/07/09/10 并记录结果 |
+| M2-15 契约回归 + 顺路改名 + ITER 回填 | ✅ 计划内 | ✅ 完成（2026-10-03） | 五套旧验收在新 build 上全绿（§3 末行）；两处 M1 遗留改名做掉（`sharding-jump.yaml`→`sharding.yaml`、`ShortCodePoolServiceTest`→`ShortCodePoolServiceLiveTest`，含 `application.yml`/活体测试/`accept-m1-07.sh` 注释与 ITER-M1、DEVELOPMENT_PLAN 的引用同步） |
 | 其余 M2 项（Cuckoo、route_rule 双轨、UA 引擎、中间页、评分、配额、Sentinel） | ✅ M2 计划内 | 未开始 | 进入前按 M1 格式细化任务表 |
 
 ## 3. 实测数字与凭证
@@ -29,7 +29,8 @@
 | 尾延迟归因（三层同时采样） | 说清尾巴在哪一层 | jump 自测处理 **0.717ms**（sum/count 精确均值，本轮 536,352 次服务端处理）对 nginx 侧 **rt p99=54ms／urt p99=54ms**（`urt/rt` 中位数与 p99 比值均 1.00、`uct≈0`）⇒ 时间全在上游应答里，而业务代码只占 0.7ms ⇒ 排队发生在 jump 进程内、handler 之外；线程 blocked=0 排除下游卡住 | `bench/reports/2026-10-03-1350-m2-00-jump-diagnosis-c200.md`（首份同名存档 1331 是脚本卡死留下的空文件，未提交即删除） |
 | 容量上限归属 | 谁限制单机跳转 QPS | 全链路在跑 5,002–8,383 QPS；**停掉 consumer（ClickHouse 不再写入）后同一入口 24,525 QPS**。负载中逐容器 CPU：ClickHouse ≈1.9 核、nginx ≈1.4、jump ≈1.3×2、kafka ≈0.6 ⇒ 上限由事件链决定，不是数据面 | `bench/reports/2026-10-03-1418-m2-00-jump-attribution-c64.md`、`bench/reports/2026-10-01-1336-m1-11-kafka.md` |
 | 稳定性隐患消除 | 容器不被 OOM-kill | jump `mem_limit` 512m→768m：常驻长期 473–509MiB/512MiB 贴顶；**对 P99 无改善**（GC/内存两条线都已实测排除），提额只解决被 kill 风险 | `deploy/compose/docker-compose.yml` jump 段注释 + `bench/reports/2026-10-03-1414-m2-00-jump-loadcurve.md` |
-| 防刷端到端验收（频控 + 配额 + 降级） | 频控拦得住、绕不过、不烧配额、丢了键不超放 | ✅ **17/17**（`scripts/accept-m2-13.sh` A–H）：阈值 3 → 恰好放行 3 次、越界 429 带 `Retry-After`；伪造 `X-Forwarded-For`/`X-Real-IP` 4 次**全 429**（绕不过）；同 IP 换 code、同 code 换 IP 互不影响；被拦请求**不消耗配额**（quota=50、放行 3 → 余数 47）；被拦的击以 `risk_score=25` 落 CH（8 拦 8 放，行数与脚本内计数一致）；`docker stop xsl-redis-1` 后冷码仍 302、进程内计数继续生效、`mode=local` 指标增量 4；删 `sl:cnt` 模拟丢键后只再放 2 次就 410（M1 行为是在这里重新放出 5 次满额） | 脚本输出即凭证；对账环节实测 `link_route.access_used=3` 与 Redis 权威值一致 |
+| 防刷端到端验收（频控 + 配额 + 降级） | 频控拦得住、绕不过、不烧配额、丢了键不超放 | ✅ **17/17**（`scripts/accept-m2-13.sh` A–H）：阈值 3 → 恰好放行 3 次、越界 429 带 `Retry-After`；伪造 `X-Forwarded-For`/`X-Real-IP` 4 次**全 429**（绕不过）；同 IP 换 code、同 code 换 IP 互不影响；被拦请求**不消耗配额**（quota=50、放行 3 → 余数 47）；被拦的击以 `risk_score=25` 落 CH（8 拦 8 放，行数与脚本内计数一致）；删 `sl:cnt` 模拟丢键后只再放 2 次就 410（M1 行为是在这里重新放出 5 次满额）；`docker stop xsl-redis-1` 后冷码仍 302、进程内计数继续生效、`mode=local` 指标增量 13 | 脚本输出即凭证；对账环节实测 `link_route.access_used=3` 与 Redis 权威值一致 |
+| 防刷收口全量回归（M2-15） | 动了契约就要重跑旧验收 | ✅ **0 回归**（2026-10-03 17:1x，同一台机器、含频控的新 build）：`make verify` 全仓 **87 测 / 0 失败 / 0 错误 / 0 跳过**；`accept-m1-04` **7/7**、`accept-m1-06` **21/21**（本期给它加了 `rate_limit_per_minute` 契约）、`accept-m1-07` **15/15**、`accept-m1-09` **14/14**（1204 击端到端一致 + WAL 兜底）、`accept-m1-10` **19/19**（滚动重启窗口 5,632 击全 302／0×5xx，频控在被测路径里）、`accept-m2-13` **17/17** | 脚本输出即凭证；契约变更清单＝429 状态码 + `rate_limit_per_minute`（API/DB/route_json 三处）+ ipHash 取值口径 + `risk_score` 语义 |
 | 频控 Lua 基线（8.1-A 最后一项未测） | ≥3 万次/s（目标未写连接数，见 §4） | 同一份脚本、`-P 1` 不流水线：**单连接 27,803/s**（avg 0.034ms、p99 0.095ms，比目标低 7%）、**10 连接 166,852/s**、**50 连接 211,894/s**（超 5.6–7.1 倍）。按"能否撑住跳转"判定：**达标**（jump 端到端上限 ~13.8k QPS 由两实例分摊） | `bench/reports/2026-10-03-1652-m2-14-ratelimit-lua.md` |
 | 频控上线后跳转不退化 | P99<50ms @ ≥2000 QPS 维持 | ✅ 仍达标：40s 档复跑 4,536／5,389／5,958 QPS 时 P99 = **5.36／20.32／20.61ms**；jump 自测均值 0.124–0.247ms → **0.328–0.937ms**（每请求多一次 EVAL + 阈值判定），绝对值仍 <1ms、尾延迟构成未变 | `bench/reports/2026-10-03-1656-m2-00-jump-loadcurve.md`（同日 20s 档首跑见 `-1653-`，其 c=4 的 p99 50.79ms 是采样噪声，见 §4） |
 | 配置变更后的旧验收复跑 | 动了 nginx/jump/compose 三处配置，不得回归既有链路 | ✅ **0 回归**（2026-10-03 14:38，同一台机器、改后重启的栈上）：`accept-m1-07.sh` **15/15**（302/404/403/410 语义 + 冷码回源二查命中缓存 db 计数 2.0→2.0）、`accept-m1-10.sh` **19/19**（三域同一 Location、双实例承载 32/32、滚动重启窗口 5,632 击全 302／**0×5xx**、管理面宕机不影响跳转、未登记 Host 444） | 脚本输出即凭证；改动面＝`nginx.conf` 的 `log_format`（新增 `rt/uct/urt`）、`sl-jump/application.yml`（开启 HTTP 分位数）、compose 的 jump `mem_limit` |
@@ -52,6 +53,7 @@
 | **"Redis 挂 → 跳转不跌零"在冷码上是假的** | `RouteRepository.load()` 的 Redis **读**侧没有兜底（只有写回侧有 try/catch），M1 期间靠 30s 的 L1 侥幸挡着；而且 Lettuce 默认命令超时 60s/连接超时 10s，故障时每个请求要等十几秒——"降级"实际是"卡死"，accept-m2-13 的 G 段第一次跑就是全 000 | 读侧失败按"未命中"走 DB 回源；jump 的 Redis 超时压到 500ms（正常路径用不到，只有故障才付这次等待）。DESIGN 8.3 的那一行现在才真的成立 |
 | **我自己引入的缺陷：新链接首击就被扣掉重建缓冲** | 冷重建把"键不存在"当成"计数器丢了"，但还有第二种情况——**这条链接从没被点过**。结果 `quota=50` 的链接点 3 次后余数只剩 35（accept-m2-13 的 D1 抓到；如果只看单测会全绿，因为单测里没有"全新链接"这个初始态） | 用 `access_used_at IS NULL` 区分两种"键不存在"（对账只在 Redis 键存在时回写，它是 NULL 就说明没有历史要保护）；补回归测 `neverReconciledLinkSeedsFullQuota`。同时给缓冲加"剩余额度 1/4"封顶，否则 `access_limit=5` 这类小配额链接在尾段重建会被直接打死（把"少放"做成"拒服"） |
 | 频控脚本从 Java 内联字符串挪到 `resources/lua/*.lua` | 8.1-A 的基线要用 `redis-benchmark` 跑同一个脚本；内联就得抄一份，抄的那份会悄悄漂移 | 抽文件，jump 与 bench 读同一份（连注释一起送，sha 才对得上）。坑记录：Spring Data Redis 3.3 已无 `ResourceScriptSource`/`setScriptCharset`，`setLocation` 也不给字符集——脚本注释里有中文，必须自己按 UTF-8 读成字符串再构造，否则"测的即跑的"这句话在字节层面不成立 |
+| **验收脚本自己有个假失败**：G/H 段的"丢键后收口"偶发多放一次 | 第一版把"Redis 停机演练"排在"对账与冷重建"之前。停机恢复的瞬间 jump 会有一两次 Redis 调用失败并走 fail-open（DESIGN 8.3 的正确行为），那次点击既不写 `sl:cnt` 也不扣减，把后面的配额计数污染成 3 次放行。定性时先对照了 `sl-jump/sharding.yaml` 与 `sl-admin/sharding.yaml` 的 `link_route` 分片轴——**怕的是真路由不一致**（admin 写一个分片、jump 读另一个），那会是严重 bug；查清两边都是 `short_code` + `code-hash-mod`，排除 | 故障演练挪到最后（现 G=对账与冷重建、H=停机），并在脚本注释里写明"停机必须放最后"的原因；改后连跑两次 17/17 稳定。教训：**断言失败先定性再动手**，flake 的正确处理不是加重试，而是搞清楚它为什么会出现 |
 
 ## 5. 本期决策记录
 
@@ -77,7 +79,8 @@
 
 ## 6. 下期待办与风险
 
-- **M2-15 收口（下一项，本期唯一欠的账）**：`make verify` 全量已过（84 测 0 失败），但**旧验收只复跑了一半**——m1-04（7/7）、m1-07（15/15）、m1-09（14/14）、m1-10（19/19，含频控在路径上的 5,632 击滚动重启）已过，**m1-06 还没在新 build 上重跑**，而本期恰好动了它的契约（`POST/PATCH /api/v1/links` 新增 `rate_limit_per_minute`）。同期补两处 M1 遗留改名（`sharding-jump.yaml`→`sharding.yaml`、`ShortCodePoolServiceTest`→`ShortCodePoolServiceLiveTest`）并把本节 §2/§3/§4 的数字回表核对一遍。
+- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。下一项在两者之间选：**M2-01 事件链批量化**（把跳转 QPS 上限从 ~14k 抬到 ≥20k，M2-00 的归因直接指向它），或 M2 粗列表里的 **route_rule 双轨 + UA 路由引擎 + 中间页**（动态路由那一半，出口标准"UA 重放脚本全绿"）。
+- **行为评分（DESIGN 5.3 第 3 层）留了明确的接口**：本期已把 `risk_score` 从恒 0 变成可写（超频贡献 +25），`is_bot` 仍恒 0；评分规则表落地时，只需在 `Direct302Resolver` 的频控之后插一层打分并把 `score ≥ 40 → is_bot=1 + 验证页` 判掉，事件与看板口径不用回头再改。
 - **频控的两个已知边界（不在本期解，先记账）**：① 固定 60s 窗口在边界处最坏放行约 2× 阈值 → 真滑动要做就得连 Redis Cluster 的 hash tag 一起改（DESIGN 5.3 第 2 层已写明理由）；② 阈值只有"全局 + 链接级"两层，租户级覆盖与配额（DESIGN 5.3 第 1 层"按租户可配"、6.1 三级配额）是后面的独立任务。
 - **M2-01 事件链批量化（由 M2-00 的归因引出）**：ClickHouse 从"每批 JSONEachRow 直插"改为可控批量（攒批 + `async_insert`/`wait_for_async_insert=0` 口径待定）+ consumer 拉取节奏与 `max.poll.records` 调参 + jump 侧 Kafka producer 批参数（linger/batch/缓冲）。目标：全链路 QPS 上限从 ~14k 抬到 ≥20k，且 P99@目标负载不退化。属于设计变更，先按 M1 格式细化任务表再动代码。
 - **对外数字要重跑**：宿主处于内存饱和时得到的 4.5k–13.8k QPS 只能当"条件下界"用；正式引用前在一台只跑本栈的宿主机上复跑 loadcurve（**≥40s 一档**，见 §4）+ 三轮 wrk，并把 `env_snapshot` 一并存档。频控基线同理——它是在有负载干扰的下午测的，单连接那一档离 3 万只差 7%，安静宿主上大概会翻过线，但要用安静宿主的数。

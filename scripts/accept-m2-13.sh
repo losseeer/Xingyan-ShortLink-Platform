@@ -6,8 +6,8 @@
 #   D. 顺序证据：被频控拦下的请求不消耗 access_limit（余数 = 上限 − 放行数）
 #   E. 事件仍记录：被拦的击进 ClickHouse 且 risk_score=25（否则看板只看到流量凭空消失）
 #   F. 窗口滑过后恢复放行
-#   G. Redis 停机：跳转不跌零，频控退化为进程内计数并带 mode=local 指标（DESIGN 8.3）
-#   H. 配额对账（M2-12）：Redis 权威值镜像进 MySQL；丢键后按快照收口而不是回到满额
+#   G. 配额对账（M2-12）：Redis 权威值镜像进 MySQL；丢键后按快照收口而不是回到满额
+#   H. Redis 停机（放最后）：跳转不跌零，频控退化为进程内计数并带 mode=local 指标（DESIGN 8.3）
 # 前置：make images && make up（jump/admin 为含频控的镜像）。
 # 口径：断言一律走 nginx :80 真实入口；只有 B/G 用 8020 直连来模拟"另一个来源 IP"
 #       （直连时没有 nginx，X-Real-IP 由脚本自己给，正是用来验证 jump 侧的取值优先级）。
@@ -92,9 +92,9 @@ $RCLI ping > /dev/null 2>&1 || { echo "redis 不可达，先 make up"; exit 1; }
 
 CODE_A=$(create_link 3 50);  CODES+=("$CODE_A")
 CODE_B=$(create_link 3 null); CODES+=("$CODE_B")
-CODE_G=$(create_link 2 null); CODES+=("$CODE_G")
-note "fixtures：A=$CODE_A(rate=3,quota=50) B=$CODE_B(rate=3) G=$CODE_G(rate=2)"
-del_keys "$CODE_A" "$CODE_B" "$CODE_G"    # 建链时写过的缓存/键清掉，保证从冷码开始
+CODE_R=$(create_link 2 null); CODES+=("$CODE_R")
+note "fixtures：A=$CODE_A(rate=3,quota=50) B=$CODE_B(rate=3) R=$CODE_R(rate=2，停机演练用)"
+del_keys "$CODE_A" "$CODE_B" "$CODE_R"    # 建链时写过的缓存/键清掉，保证从冷码开始
 
 allowed=0; blocked=0
 tally() { # tally <status>
@@ -158,28 +158,14 @@ sleep "$WAIT"
 r=$(req "$CODE_A"); tally "$(status_of "$r")"
 check "F1 下一窗口恢复放行" 302 "$(status_of "$r")"
 
-# ================= G. Redis 停机：不跌零 + 频控降级 =================
-note "docker stop xsl-redis-1（DESIGN 8.3：频控退化为进程内计数，跳转不跌零）"
-docker stop xsl-redis-1 > /dev/null 2>&1
-G=()
-for i in 1 2 3 4; do G+=("$(status_of "$(req_direct "$CODE_G" "203.0.113.77")")"); done
-LOCAL=$(curl -s -m 5 "$JUMP/actuator/prometheus" | awk '/xsl_jump_rate_limit_total\{.*mode="local"/{s+=$2} END{printf "%.0f", s+0}')
-docker start xsl-redis-1 > /dev/null 2>&1
-for _ in $(seq 25); do $RCLI ping > /dev/null 2>&1 && break; sleep 1; done
-check "G1 Redis 停机期间冷码仍 302（读侧兜底 + DB 回源）" "302 302" "${G[0]} ${G[1]}"
-check "G2 进程内计数仍生效：阈值 2，第 3 次起 429" "429 429" "${G[2]} ${G[3]}"
-check "G3 降级样本可用 mode=local 单独查出" "yes" \
-  "$(python3 -c "import sys;print('yes' if int(sys.argv[1]) >= 3 else 'no')" "${LOCAL:-0}")"
-note "xsl_jump_rate_limit_total{mode=\"local\"} 增量=$LOCAL"
-
-# ================= H. 配额对账与 Redis 丢键后的冷重建（M2-12）=================
-CODE_H=$(create_link 100000 5); CODES+=("$CODE_H")
-del_keys "$CODE_H"
-note "fixture H=$CODE_H（quota=5、频控放宽）：先正常消耗 3 次"
-H_PRE=()
-for i in 1 2 3; do H_PRE+=("$(status_of "$(req "$CODE_H")")"); done
-check "H1 消耗前 3 击正常 302" "302 302 302" "${H_PRE[*]}"
-check "H2 Redis 权威余数=2" "2" "$($RCLI GET "sl:cnt:$CODE_H" | tr -d '\r')"
+# ================= G. 配额对账与 Redis 丢键后的冷重建（M2-12）=================
+CODE_Q=$(create_link 100000 5); CODES+=("$CODE_Q")
+del_keys "$CODE_Q"
+note "fixture Q=$CODE_Q（quota=5、频控放宽）：先正常消耗 3 次"
+Q_PRE=()
+for i in 1 2 3; do Q_PRE+=("$(status_of "$(req "$CODE_Q")")"); done
+check "G1 消耗前 3 击正常 302" "302 302 302" "${Q_PRE[*]}"
+check "G2 Redis 权威余数=2" "2" "$($RCLI GET "sl:cnt:$CODE_Q" | tr -d '\r')"
 
 snapshot_of() { # snapshot_of <code> → link_route.access_used（两分片里取有值的那个）
   for db in xsl_00 xsl_01; do
@@ -192,17 +178,33 @@ snapshot_of() { # snapshot_of <code> → link_route.access_used（两分片里�
 USED=-
 for _ in $(seq 30); do
   sleep 3
-  USED=$(snapshot_of "$CODE_H")
+  USED=$(snapshot_of "$CODE_Q")
   [[ "$USED" == "3" ]] && break
 done
-check "H3 管理面对账把权威值镜像进 MySQL（access_used=3）" "3" "$USED"
-note "等待对账周期（默认 60s）实测耗时；指标 xsl_quota_reconcile_total 可查"
+check "G3 管理面对账把权威值镜像进 MySQL（access_used=3）" "3" "$USED"
+note "等一轮对账（默认 60s 周期）；指标 xsl_quota_reconcile_total 可查"
 
-del_keys "$CODE_H"    # 只删配额键，模拟 Redis 丢数据（路由缓存随后回源）
+del_keys "$CODE_Q"    # 只删配额键，模拟 Redis 丢数据（路由缓存随后回源）
 REBUILD=()
-for i in 1 2 3; do s=$(status_of "$(req "$CODE_H")"); tally "$s"; REBUILD+=("$s"); done
+for i in 1 2 3; do s=$(status_of "$(req "$CODE_Q")"); tally "$s"; REBUILD+=("$s"); done
 # 播种值 = 5 − 快照已用 3 − min(缓冲, 剩余额度 1/4=0) = 2 → 再放 2 次后 410
-check "H4 丢键后按快照收口（只再放 2 次，而不是回到满额 5 次）" "302 302 410" "${REBUILD[*]}"
+check "G4 丢键后按快照收口（只再放 2 次，而不是回到满额 5 次）" "302 302 410" "${REBUILD[*]}"
+
+# ================= H. Redis 停机：不跌零 + 频控降级（放最后做）=================
+# 这段会 docker stop/start Redis：jump 侧在恢复瞬间可能有一两次调用失败走 fail-open
+# （那是 DESIGN 8.3 的正确行为），但会让上面 G 段的配额计数失真 —— 所以故障演练必须放在最后。
+note "docker stop xsl-redis-1（DESIGN 8.3：频控退化为进程内计数，跳转不跌零）"
+docker stop xsl-redis-1 > /dev/null 2>&1
+R=()
+for i in 1 2 3 4; do R+=("$(status_of "$(req_direct "$CODE_R" "203.0.113.77")")"); done
+LOCAL=$(curl -s -m 5 "$JUMP/actuator/prometheus" | awk '/xsl_jump_rate_limit_total\{.*mode="local"/{s+=$2} END{printf "%.0f", s+0}')
+docker start xsl-redis-1 > /dev/null 2>&1
+for _ in $(seq 25); do $RCLI ping > /dev/null 2>&1 && break; sleep 1; done
+check "H1 Redis 停机期间冷码仍 302（读侧兜底 + DB 回源）" "302 302" "${R[0]} ${R[1]}"
+check "H2 进程内计数仍生效：阈值 2，第 3 次起 429" "429 429" "${R[2]} ${R[3]}"
+check "H3 降级样本可用 mode=local 单独查出" "yes" \
+  "$(python3 -c "import sys;print('yes' if int(sys.argv[1]) >= 3 else 'no')" "${LOCAL:-0}")"
+note "xsl_jump_rate_limit_total{mode=\"local\"} 增量=$LOCAL"
 
 echo "== $pass passed, $fail failed =="
 exit $(( fail > 0 ? 1 : 0 ))

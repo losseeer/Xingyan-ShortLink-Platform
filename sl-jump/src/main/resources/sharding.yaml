@@ -1,4 +1,6 @@
-# 数据面回源专用分片配置（与 sl-admin/sharding.yaml 同源 ds，仅声明 jump 读取的表）。
+# 数据面回源专用分片配置：与 sl-admin 的 sharding.yaml 同名不同物（各自的 classpath），
+# 同源 ds、只声明 jump 读取的表。文件名不带 -jump 后缀是 M2-15 的决定：模块目录已经提供了
+# 命名空间，两边同名反而更容易看出"这是同一套分片规则的两个视图"。
 # 依赖方向（DESIGN 3.4）：jump 不依赖 admin，故独立持有一份最小配置；
 # 连接参数环境变量注入口径与 admin 一致：?placeholder-type=environment。
 

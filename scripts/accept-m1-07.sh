@@ -19,7 +19,7 @@ route_json() { # route_json <status> <expire|null> <limit|null>
   printf '{"origin_url":"%s","tenant_id":1001,"redirect_type":1,"expire_time":%s,"access_limit":%s,"status":%s,"version":1}' "$ORIGIN" "$2" "$3" "$1"
 }
 
-# Java String.hashCode → 物理库（INLINE: Math.abs(hashCode)%2），与 sharding-jump.yaml 完全一致
+# Java String.hashCode → 物理库（INLINE: Math.abs(hashCode)%2），与 sl-jump 的 sharding.yaml 完全一致
 phys_db() {
   python3 -c "
 s='$1'

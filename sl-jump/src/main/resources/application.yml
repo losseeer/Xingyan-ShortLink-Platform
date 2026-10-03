@@ -14,7 +14,7 @@ spring:
       connect-timeout: ${XSL_REDIS_CONNECT_TIMEOUT:500ms}
   datasource:
     driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
-    url: jdbc:shardingsphere:classpath:sharding-jump.yaml?placeholder-type=environment
+    url: jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment
   jackson:
     property-naming-strategy: SNAKE_CASE
   kafka:

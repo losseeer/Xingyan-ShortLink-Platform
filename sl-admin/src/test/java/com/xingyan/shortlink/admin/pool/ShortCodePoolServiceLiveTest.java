@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * M1-05 验收：短码池补池/租用/水位（DESIGN 5.1/4.3）。
  * 依赖本机 compose Redis(6380) 与 MySQL(3307)，不可达则整体跳过。隔离 ns=9999。
  */
-class ShortCodePoolServiceTest {
+class ShortCodePoolServiceLiveTest {
 
     private static final int NS = 9999;
     private static LettuceConnectionFactory redisFactory;

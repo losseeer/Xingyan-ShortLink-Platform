@@ -103,10 +103,15 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test' | sudo tee -a /etc/hosts
 | `scripts/accept-m1-07.sh` | 跳转语义 302/404/403/410 + 冷码回源二查命中缓存（metrics 佐证） |
 | `scripts/accept-m1-09.sh` | 1000+ 击端到端一致、Kafka pause 期间 WAL 兜底与恢复重放（丢失率首证） |
 | `scripts/accept-m1-10.sh` | 三域同一 Location、双实例承载分布、滚动重启期间 0×5xx、控制面宕机不影响跳转 |
+| `scripts/accept-m2-13.sh` | 频控：阈值内 302／越界 429、伪造 XFF 绕不过、被拦不烧配额、被拦击仍入库、丢键后按快照收口、Redis 停机降级 |
 | `scripts/demo.sh` | 端到端演示（`make demo`） |
 
 ## 当前状态
 
 M1（跳转最小闭环 + 事件链路）**十三项任务全部完成并有实测存档**，收口 tag `m1`（仅本地）。M1-11 压测在收口次日补跑（前提：Docker VM 内存提到 8G、`brew install wrk`），存档在 `bench/reports/`；[docs/DESIGN.md](docs/DESIGN.md) §1.3 与 §8.1-A 的"实测"列只引用这些文件，**未达标项（签发 TPS、短码生成延迟）也照实写着**并附瓶颈分析与复测路径。
 
-M2（动态路由与防刷）进行中，首项 **M2-00 资源预算重排 + 跳转 P99 治理已于 2026-10-03 收口**，见 [docs/iterations/ITER-M2.md](docs/iterations/ITER-M2.md)。它的结论主要是**测量口径**层面的：M1-11 在 200 连接（≈10× 目标负载）判"P99 未达标"，把 SLO 判定和容量上限混成了同一件事——在目标负载上（5,002 QPS）实测 P50 0.646ms／P99 21.08ms，**达标**；同时把尾延迟归因到事件链（负载中 ClickHouse ≈1.9 核，停 consumer 后同一入口 24,525 QPS），GC 假设已由对照实验证伪。剩下的 M2 待办：事件链批量化（M2-01）、频控主线、签发链路换工具复测。
+M2（动态路由与防刷）进行中。**M2-00 资源预算重排 + 跳转 P99 治理已于 2026-10-03 收口**，其结论主要是**测量口径**层面的：M1-11 在 200 连接（≈10× 目标负载）判"P99 未达标"，把 SLO 判定和容量上限混成了同一件事——在目标负载上（5,002 QPS）实测 P50 0.646ms／P99 21.08ms，**达标**；同时把尾延迟归因到事件链（负载中 ClickHouse ≈1.9 核，停 consumer 后同一入口 24,525 QPS），GC 假设已由对照实验证伪。
+
+**防刷主线（M2-10…M2-15）同日收口**：Redis 窗口频控（`sl:rl:{code}:{iphash}:{slot}`，单脚本 INCR+首次 EXPIRE）命中返回 429 且**不消耗配额**；客户端 IP 只信 nginx 覆盖写入的 `X-Real-IP`（原来取 `X-Forwarded-For` 首元素，客户端可伪造 → 频控可绕、`ip_hash` 不可信）；被拦的击仍进事件流并记 `risk_score=25`；`access_limit` 补齐对账（Redis 权威值 → `link_route.access_used` 快照，管理面每 60s 回写），丢键后按快照重建而不是回到满额；Redis 停机时频控退化为进程内计数、跳转不跌零。端到端验收 `scripts/accept-m2-13.sh` 17/17，五套旧验收全绿，DESIGN 8.1-A 的「频控 Lua ≥3 万次/s」由未测转为实测（单连接 2.78 万/s、10 连接 16.7 万/s）。详见 [docs/iterations/ITER-M2.md](docs/iterations/ITER-M2.md)。
+
+剩下的 M2 待办：事件链批量化（M2-01，把跳转上限从 ~14k 抬到 ≥20k）、route_rule 双轨 + UA 路由引擎 + 中间页、行为评分规则表、签发链路换工具复测。

@@ -49,7 +49,7 @@ class RouteRepositoryLiveTest {
         redis.afterPropertiesSet();
         HikariConfig cfg = new HikariConfig();
         cfg.setDriverClassName("org.apache.shardingsphere.driver.ShardingSphereDriver");
-        cfg.setJdbcUrl("jdbc:shardingsphere:classpath:sharding-jump.yaml?placeholder-type=environment");
+        cfg.setJdbcUrl("jdbc:shardingsphere:classpath:sharding.yaml?placeholder-type=environment");
         cfg.setMaximumPoolSize(4);
         ds = new HikariDataSource(cfg);
         jdbc = new JdbcTemplate(ds);

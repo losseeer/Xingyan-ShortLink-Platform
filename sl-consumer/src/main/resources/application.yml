@@ -10,9 +10,15 @@ spring:
       group-id: sl-consumer
       auto-offset-reset: earliest
       enable-auto-commit: false
-      max-poll-records: ${XSL_CH_BATCH_SIZE:500}
+      # M2-21：一批 500 行意味着每 500 行一次同步 POST + 一个 CH part，part 风暴才是 CH CPU 的大头。
+      # 抬到 5000 并在 CH 侧开 async_insert（见 ClickHouseWriter），换的是 part 数量与请求次数，
+      # 不换"写成功才提交 offset"的语义。
+      max-poll-records: ${XSL_CH_BATCH_SIZE:5000}
       properties:
         fetch.max.wait.ms: 2000
+        # 低流量时不要让 consumer 空转拉小批：攒够 1MB 或等满上面的 wait 再返回
+        fetch.min.bytes: ${XSL_KAFKA_FETCH_MIN_BYTES:1048576}
+        partition.fetch.bytes: ${XSL_KAFKA_PARTITION_FETCH_BYTES:4194304}
     listener:
       ack-mode: manual_immediate
       type: batch

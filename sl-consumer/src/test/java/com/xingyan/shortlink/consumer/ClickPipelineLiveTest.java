@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.kafka.support.Acknowledgment;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -91,34 +92,40 @@ class ClickPipelineLiveTest {
         cc.put(ConsumerConfig.GROUP_ID_CONFIG, group);
         cc.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         cc.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        cc.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         cc.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 500);
+        // 不开 auto.commit，也不从 earliest 起爬：早先版本要越过 topic 的全部历史消息才拿得到
+        // 自己那 3 条，积压涨到几百万条后 20s 内跑不完（表现为"Kafka 应收到 3 条投递 expected 3 was 0"）。
+        cc.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
 
         String idA = UUID.randomUUID().toString(), idB = UUID.randomUUID().toString();
         long base = System.currentTimeMillis() / 1000 - 3600;
 
         try (KafkaProducer<String, String> p = new KafkaProducer<>(pc);
              KafkaConsumer<String, String> c = new KafkaConsumer<>(cc)) {
-            c.subscribe(List.of(TOPIC));
-            // 同一事件投递两次（模拟 at-least-once 重复），另加一条正常事件
-            p.send(new ProducerRecord<>(TOPIC, CODE, mapper.writeValueAsString(event(idA, base)))).get();
-            p.send(new ProducerRecord<>(TOPIC, CODE, mapper.writeValueAsString(event(idA, base)))).get();
-            p.send(new ProducerRecord<>(TOPIC, CODE, mapper.writeValueAsString(event(idB, base + 1)))).get();
+            // 同一事件投递两次（模拟 at-least-once 重复），另加一条正常事件。
+            // 先发、从 RecordMetadata 拿分区与位点：不猜分区（M2-22 加分区后也不受影响），
+            // 也不依赖 topic 既有体量。
+            var m1 = p.send(new ProducerRecord<>(TOPIC, CODE, mapper.writeValueAsString(event(idA, base)))).get();
+            var m2 = p.send(new ProducerRecord<>(TOPIC, CODE, mapper.writeValueAsString(event(idA, base)))).get();
+            var m3 = p.send(new ProducerRecord<>(TOPIC, CODE, mapper.writeValueAsString(event(idB, base + 1)))).get();
             p.flush();
+            var tp = new org.apache.kafka.common.TopicPartition(m1.topic(), m1.partition());
+            long first = Math.min(Math.min(m1.offset(), m2.offset()), m3.offset());
 
+            c.assign(List.of(tp));
+            c.seek(tp, first);
+            List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> mine = new ArrayList<>();
+            long deadline = System.currentTimeMillis() + 20_000;
+            while (mine.size() < 3 && System.currentTimeMillis() < deadline) {
+                for (var r : c.poll(Duration.ofSeconds(1))) {
+                    if (CODE.equals(r.key())) mine.add(r);
+                }
+            }
+            assertEquals(3, mine.size(), "Kafka 应收到本测试 3 条投递（" + tp + " @" + first + "）");
             ClickEventBatchListener listener = new ClickEventBatchListener(
                     ch, mapper, new SimpleMeterRegistry());
-            List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records = List.of();
-            long deadline = System.currentTimeMillis() + 20_000;
-            while (records.size() < 3 && System.currentTimeMillis() < deadline) {
-                records = java.util.stream.StreamSupport
-                        .stream(c.poll(Duration.ofSeconds(1)).spliterator(), false)
-                        .filter(r -> CODE.equals(r.key()))
-                        .collect(java.util.stream.Collectors.toList());
-            }
-            assertEquals(3, records.size(), "Kafka 应收到本测试 3 条投递");
             Acknowledgment ack = () -> { };
-            listener.onBatch(records, ack);
+            listener.onBatch(mine, ack);
         }
 
         long count = ch.countByCode(CODE);

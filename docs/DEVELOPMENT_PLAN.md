@@ -39,6 +39,19 @@ M1 范围裁剪说明：频控/行为评分/动态路由归 M2；`access_limit` 
 Cuckoo 替换（含停用/封禁移除流程）｜route_rule 表 + 编译 route_json 双轨 + 管理接口｜UA 容器特征表 + 一级路由引擎｜中间页 HTML + Scheme 降级 JS + mock UA 重放测试集｜频控 Lua（滑动窗口 + access_limit 原子扣减）+ 对账任务｜行为评分规则表 + IDC/代理库离线更新脚本（free 库 + 手工样本）｜MyBatis 租户拦截器 + 三级配额｜Sentinel 网关限流 + 429。
 出口标准（DESIGN 第十章）：UA 重放脚本全绿；bot 分类正确。
 
+### 二-A、M2 已细化的部分
+
+M2-00（资源预算重排 + 跳转 P99 治理）已单独收口（2026-10-03，见 ITER-M2）。**防刷主线**按下表细化和推进；其余粗项进入前同样细化。
+
+| # | 任务 | 内容与交付物 | 验收动作 | 依赖 | 估时 |
+|---|---|---|---|---|---|
+| M2-10 | **口径先于代码** | 四处设计修正写进 DESIGN：频控置于配额扣减**之前**（5.2 步骤序）、本期做**固定 60s 窗口**而非真滑动（5.3/4.3，附两条理由）、客户端 IP 以 nginx 覆盖写入的 `X-Real-IP` 为准（4.2 ip_hash 口径）、对账任务落**管理面**（8.4） | DESIGN diff 与本表一致；ITER-M2 §5 有对应决策条目 | M2-00 | 0.2 天 |
+| M2-11 | **频控 Lua + 429** | sl-jump `RateLimiter`：单脚本 `INCR + 首次 EXPIRE`，键 `sl:rl:{code}:{iphash}:{slot}`（60s 槽、默认 60 次/分钟、env 可配）；命中 → 429 + `Retry-After`，**不扣配额、不发跳转**；被拦击仍发 ClickEvent 且 `risk_score=25`（`is_bot` 判定属第 3 层评分，本期不越权标）；Redis 不可用时退化进程内计数（8.3）；`clientIp()` 统一口径：`X-Real-IP` → XFF 末段 → `remoteAddr`，频控与 ClickEvent.ipHash 共用 | 单测 + `RateLimiterLiveTest`（真 Redis：窗口内放行/越界拒/EXPIRE 只设一次/降级路径/换 IP 互不影响）；`xsl_jump_rate_limit_total{result=allow\|block\|degraded}` 可查 | M2-10 | 1.5 天 |
+| M2-12 | **access_limit 对账与冷重建** | `link_route` 增 `access_used/access_used_at` 快照列（`01-schema.sql` 用 information_schema 守卫的幂等 ALTER，双分片库都要）；sl-admin `@Scheduled` 每 60s 以 Redis 权威值回写；jump 在键缺失时按 `access_limit − 快照已用 − 保守缓冲` 初始化（宁可少放不可超放） | M2-13 脚本 E 段：删掉 `sl:cnt:*` 后重建，剩余量 = 期望值 − 缓冲（不超放）；跑一轮对账后 MySQL 值与 Redis 权威一致 | M2-11 | 1 天 |
+| M2-13 | **端到端验收脚本** | `scripts/accept-m2-13.sh`；三处旧脚本的 Redis 清理清单补 `sl:rl:*`（现只删 `sl:r:`/`sl:cnt:`） | 断言：阈值内 302、越界 429 且带 `Retry-After`；客户端自带 `X-Forwarded-For` **绕不过**频控；换 IP 不受影响；命中频控后 `sl:cnt` 余数不变（顺序修正的回归证据）；窗口滑过后恢复；被拦击进 CH 且 `risk_score=25`；`docker stop xsl-redis-1` 期间跳转成功率不跌零 | M2-11/12 | 0.5 天 |
+| M2-14 | **频控 Lua 基线 + 跳转不退化** | `bench/run-ratelimit-bench.sh`：`redis-benchmark --eval` 在 redis 容器内跑同一份脚本（同机回环口径如实声明）；复跑 `run-jump-loadcurve.sh` | DESIGN 8.1-A 的「频控 Lua ≥3 万次/s」由"未测"改为实测值 + 存档；loadcurve 目标负载段 P99 相对 M2-00 基线（21.08ms@5,002 QPS）退化 <20%，否则如实记录并归因 | M2-11 | 0.5 天 |
+| M2-15 | **防刷收口** | `make verify` 全量；重跑 `accept-m1-04/06/07/09/10`（本期动了 429、`risk_score`、ipHash 三处契约相关面）；顺路改名 `sharding-jump.yaml`→`sharding.yaml`、`ShortCodePoolServiceTest`→`ShortCodePoolServiceLiveTest`；ITER-M2 §2/§3/§4 回填 | 旧验收全绿或有偏差记录；ITER-M2 里每个数字都能点达到 `bench/reports/` 的具体行 | 全部 | 0.5 天 |
+
 **M3（+3 周）归因闭环与看板**：
 outbox 同步器 + `version` 强校验通道｜归因回传 mock 宣发平台（batch_id + 校验和幂等）｜**Vue 3 看板**：链接列表 / 渠道漏斗 / 双指标三页（Element Plus + ECharts，同源反代）｜8.3 降级演练全表（逐条 docker stop 存档）｜多域名切换演练｜端到端对账脚本 <2%。
 出口标准 + tag `m2`/`m3` 同 M1-12 模式。

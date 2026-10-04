@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  mock 购票页（DESIGN 6.2「mock 购票页落地为 nginx 静态回显页」，M2-34）。
+
+  存在的意义只有一件事：让短链 302 之后有一个**看得见**的终点，能证明归因参数确实跟着用户走到了购票页。
+  所以这里刻意不写后端：query 与 fragment 一律由页内 JS 自己读——
+  fragment（`#…`）根本不会随请求上行，nginx 想回显它也做不到，这一点写在这里免得下一个人再试。
+
+  假订单接口、下单落库与渠道漏斗回传属 M3（DESIGN 附录 B）。
+-->
+<title>星演购票页（mock）</title>
+<style>
+  :root{color-scheme:light}
+  body{font-family:system-ui,-apple-system,"PingFang SC",sans-serif;margin:0;padding:32px 20px 64px;
+       background:#f5f7fb;color:#223;max-width:760px;margin-inline:auto}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:#678;font-size:13px;margin-bottom:20px}
+  .card{background:#fff;border-radius:14px;padding:18px 20px;margin-bottom:16px;
+        box-shadow:0 1px 2px rgba(20,30,60,.06),0 8px 24px rgba(20,30,60,.04)}
+  .card h2{font-size:14px;margin:0 0 12px;color:#456;letter-spacing:.02em}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:6px 0;border-bottom:1px solid #eef1f6;vertical-align:top;word-break:break-all}
+  th{color:#789;font-weight:500;width:36%}
+  td{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .hit{color:#0b7a41;font-weight:600}
+  .empty{color:#9ab}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .seat{border:1px solid #cfd8ea;background:#fff;border-radius:8px;padding:7px 11px;font-size:13px;cursor:pointer}
+  .seat[aria-pressed="true"]{background:#2f6fed;border-color:#2f6fed;color:#fff}
+  .note{font-size:12px;color:#789;margin-top:10px;line-height:1.6}
+  code{background:#eef1f6;padding:1px 5px;border-radius:5px}
+</style>
+</head>
+<body>
+<h1>星演 ·  autumn 巡演（上海站）</h1>
+<p class="sub">这是本地 mock 页，只回显跳转带过来的参数；不下真订单（DESIGN 附录 B，订单侧属 M3）。</p>
+
+<div class="card">
+  <h2>归因参数（本次点击）</h2>
+  <table id="attribution"></table>
+  <p class="note">归因白名单见 DESIGN 附录 B：<code>xy_click_id</code>、<code>channel_id</code>、
+     <code>campaign_id</code>、<code>promoter_id</code>、<code>utm_*</code>。
+     <code>xy_click_id</code> 由短链平台每次跳转生成，落库后与订单关联即为一次归因。</p>
+</div>
+
+<div class="card">
+  <h2>链接里的其它参数</h2>
+  <table id="others"></table>
+</div>
+
+<div class="card">
+  <h2>Fragment（<code>#</code> 之后的部分）</h2>
+  <div id="fragment" class="empty">（无）</div>
+  <p class="note">这一格只能由浏览器自己填：<code>#</code> 之后的内容不会发给服务器，任何服务端回显都做不出来。</p>
+</div>
+
+<div class="card">
+  <h2>选个座位（纯前端，不落库）</h2>
+  <div class="row" id="seats"></div>
+  <p class="note" id="chosen">还没选。</p>
+</div>
+
+<script>
+// 页面上所有值都经 textContent 落进 DOM，不走 innerHTML —— 回显的是用户可控串，
+// 这个习惯和 jump 中间页的转义是同一条要求（DESIGN 9.x）。
+(function () {
+  var ATTRIBUTION = ["xy_click_id", "channel_id", "campaign_id", "promoter_id",
+                     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"];
+  var params = new URLSearchParams(location.search);
+  var seen = {};
+
+  function row(table, key, value, isHit) {
+    var tr = document.createElement("tr");
+    var th = document.createElement("th");
+    var td = document.createElement("td");
+    th.textContent = key;
+    td.textContent = value;
+    td.className = isHit ? "hit" : (value ? "" : "empty");
+    tr.appendChild(th); tr.appendChild(td);
+    document.getElementById(table).appendChild(tr);
+  }
+
+  ATTRIBUTION.forEach(function (k) {
+    seen[k] = true;
+    var v = params.get(k);
+    row("attribution", k, v === null ? "（链接里没带）" : v, v !== null);
+  });
+
+  var extras = [];
+  params.forEach(function (v, k) { if (!seen[k]) extras.push([k, v]); });
+  if (extras.length === 0) {
+    row("others", "query", "（除归因外没有其它参数）", false);
+  } else {
+    extras.forEach(function (p) { row("others", p[0], p[1], false); });
+  }
+
+  var frag = location.hash ? location.hash.slice(1) : "";
+  var fragEl = document.getElementById("fragment");
+  fragEl.textContent = frag ? decodeURIComponent(frag) : "（无）";
+  fragEl.className = frag ? "hit" : "empty";
+  fragEl.id = "fragment";
+
+  var chosen = document.getElementById("chosen");
+  ["A1", "A2", "B7", "C12", "站票"].forEach(function (seat) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "seat";
+    b.textContent = seat;
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", function () {
+      var clicked = b.getAttribute("aria-pressed") === "true";
+      [].forEach.call(document.querySelectorAll(".seat"), function (x) { x.setAttribute("aria-pressed", "false"); });
+      b.setAttribute("aria-pressed", clicked ? "false" : "true");
+      chosen.textContent = clicked ? "已取消选择。"
+        : "已选 " + seat + "（mock：不产生订单）。若带 xy_click_id 进来，真实系统会在这里把 click_id 与订单绑定。";
+    });
+    document.getElementById("seats").appendChild(b);
+  });
+})();
+</script>
+</body>
+</html>

@@ -100,6 +100,19 @@ echo "   /s/ 形态 $(entry) -> $(curl -s -o /dev/null -w '%{http_code} %{redire
 # 上一条是第 EXPECT+1 击，统计口径按实际发出的请求数计
 EXPECT=$(( EXPECT + 1 ))
 
+# ================= 4b. 302 的终点：mock 购票页（M2-34）=================
+step "4b. 跟着 302 走到底：mock 购票页能不能打开"
+LAST_LOC=$(curl -s -o /dev/null -w '%{redirect_url}' $(resolve xy1.test) "$(host_url xy1.test)/s/$CODE?utm_source=douyin")
+FINAL=$(curl -sk -m 5 -o /tmp/demo-mock-body -w '%{http_code}' \
+  --resolve "mock.ticketsales.test:443:$NGINX_IP" "$LAST_LOC")
+EXPECT=$(( EXPECT + 1 ))   # 上面这一击同样进事件流，统计口径继续 +1
+echo "   Location = $LAST_LOC"
+echo "   终点状态 = $FINAL；页面含归因参数表 = $(grep -c '归因参数（本次点击）' /tmp/demo-mock-body) 处"
+[[ "$FINAL" == "200" ]] || {
+  echo '购票页终点打不开：确认 make tls 已生成 deploy/compose/tls/（自签证书）且 nginx 已加载 30-mock-page.conf'; exit 1; }
+echo '   浏览器复看：hosts 里加一行「127.0.0.1  mock.ticketsales.test」后直接打开上面的 Location（自签证书需手动继续）；'
+echo '   query 与 #fragment 都由页内 JS 回显——fragment 不会上行，服务端回显是做不到的（DESIGN 6.2）'
+
 # ================= 5. 归因数据落库 → 看板出数 =================
 step "5. ClickHouse 聚合 → GET /api/v1/stats/links/$CODE（nginx 按最长前缀命中 consumer）"
 DEADLINE=$(( $(date +%s) + STATS_WAIT_SECS ))

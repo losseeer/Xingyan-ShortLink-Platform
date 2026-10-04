@@ -15,7 +15,7 @@ DEVENV := deploy/compose/.env
 -include $(DEVENV)
 export XSL_MYSQL_PASSWORD XSL_CH_PASSWORD GRAFANA_PASSWORD
 
-.PHONY: print-java verify up down ps logs demo db-init seed ch-init images nginx-reload devenv mysql-rotate
+.PHONY: print-java verify up down ps logs demo db-init seed ch-init images nginx-reload devenv tls mysql-rotate
 
 # 首次使用：make devenv 生成随机口令（0600），或 cp .env.example .env 后手工填
 devenv:
@@ -60,7 +60,10 @@ verify:
 images:
 	@bash scripts/build-images.sh --mvn
 
-up:
+# tls 是 up 的前置：nginx 的 443 要挂 deploy/compose/tls/（M2-34 自签证书）。
+# 目录不存在时 Docker 会替我们 mkdir 一个空目录，nginx 随即以 "cannot load certificate" 起不来，
+# 报错还落在容器日志里而不是 Makefile 输出里——所以让它先跑脚本，而不是让人去猜。
+up: tls
 	$(COMPOSE) up -d --wait
 	# 重建 jump 容器会让容器 IP 变化，而数据面 upstream 是静态块（keepalive 需要稳定 DNS 名，
 	# nginx 只在启动/reload 时解析一次）——不 reload 就会对着旧 IP 打，全站 502。
@@ -77,6 +80,11 @@ logs:
 
 # 数据面 nginx 用静态 upstream（要 LB + 同请求改投），只在启动时解析容器名；
 # 单独 recreate 某个 jump 若换了 IP，就要优雅重载一次（不断流）。控制面走 resolver 自愈，不需要。
+# 本地自签证书（mock 购票页要在 443 上应答 https://mock.ticketsales.test，见 DESIGN 6.2）。
+# 幂等：已存在就跳过。产物 deploy/compose/tls/ 不入库。
+tls:
+	@bash scripts/gen-mock-tls.sh
+
 nginx-reload:
 	$(COMPOSE) exec -T nginx sh -c 'nginx -t && nginx -s reload'
 

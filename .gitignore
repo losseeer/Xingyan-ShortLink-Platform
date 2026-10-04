@@ -17,6 +17,9 @@ bench/.tmp/
 # 本机开发栈凭据：只入库 .env.example 模板，真实 .env 永不进仓库
 deploy/compose/.env
 
+# 本地自签证书与其私钥（`make tls` 生成，供 mock 购票页的 443 用）：同样不入库
+deploy/compose/tls/
+
 docs/wiki/
 
 # 关键问题与解决方案：跨里程碑的个人复盘叙述不适合公开仓库，本机维护即可（内容仍可参考，但不进版本控制）

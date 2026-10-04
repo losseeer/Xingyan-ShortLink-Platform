@@ -225,10 +225,15 @@ services:
 
   nginx:
     image: nginx:1.27-alpine
-    ports: ["80:80"]
+    ports: ["80:80", "443:443"]
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      # mock 购票页的静态件与本地自签证书（M2-34）。tls/ 不入库，由 `make tls` 生成 ——
+      # 目录不存在时 Docker 会替我们建一个空目录，nginx 就以 "cannot load certificate" 起不来，
+      # 所以 Makefile 的 up 目标把 tls 做成前置依赖，而不是让人去读这段报错。
+      - ./nginx/html:/etc/nginx/html:ro
+      - ./tls:/etc/nginx/tls:ro
     # service_started 而非 healthy：nginx 只在启动时解析 upstream 容器名，
     # 要求「已创建」即可；若配 healthy，则验收中 kill 掉 jump-1 后 nginx 无法重启。
     depends_on:

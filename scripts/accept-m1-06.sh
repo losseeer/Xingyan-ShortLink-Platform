@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # M1-06 验收脚本（DEVELOPMENT_PLAN：创建 200+code / DB 三表+route_json 一致 / 非白名单 400 / 他租户 403）
+# M2-31 起并入路由规则契约：PUT /links/{code}/rules 的 HTTP 绑定、编译序、双轨一致、PATCH 不掉规则。
 # 口径：直连 sl-admin:8030 并注入 X-Tenant-Id（模拟网关放行后的头部）；
 #       HMAC 全链路已由 accept-m1-04.sh 在网关上验证，M1-10/12 起本脚本并入全链路。
 set -uo pipefail
@@ -25,6 +26,9 @@ post() { # post <tenant> <body> [Idempotency-Key]
 }
 get() { curl -s -o /tmp/m106-body -w '%{http_code}' "$ADMIN/api/v1/links/$2" -H "X-Tenant-Id: $1"; }
 patch() { curl -s -o /tmp/m106-body -w '%{http_code}' -X PATCH "$ADMIN/api/v1/links/$2" -H "X-Tenant-Id: $1" -H 'Content-Type: application/json' -d "$3"; }
+put_rules() { curl -s -o /tmp/m106-body -w '%{http_code}' -X PUT "$ADMIN/api/v1/links/$2/rules" -H "X-Tenant-Id: $1" -H 'Content-Type: application/json' -d "$3"; }
+# route_rule 与 link_route 分片轴不同（tenant_id vs short_code），取快照要双库求和
+rule_json() { $MYSQL -e "SELECT route_json FROM xsl_00.link_route WHERE short_code='$1' UNION ALL SELECT route_json FROM xsl_01.link_route WHERE short_code='$1';" 2>/dev/null | tail -1; }
 jval() { python3 -c "import json,sys;print(json.load(open('/tmp/m106-body'))$1)"; }
 
 cleanup() {
@@ -34,7 +38,8 @@ cleanup() {
       DELETE FROM xsl_00.link_route WHERE short_code IN $in; DELETE FROM xsl_01.link_route WHERE short_code IN $in;
       DELETE FROM xsl_00.code_tenant_index WHERE short_code IN $in; DELETE FROM xsl_01.code_tenant_index WHERE short_code IN $in;
       DELETE FROM xsl_00.outbox WHERE aggregate_id IN $in; DELETE FROM xsl_01.outbox WHERE aggregate_id IN $in;
-      DELETE FROM xsl_00.short_code_pool WHERE short_code IN $in; DELETE FROM xsl_01.short_code_pool WHERE short_code IN $in;" >/dev/null
+      DELETE FROM xsl_00.short_code_pool WHERE short_code IN $in; DELETE FROM xsl_01.short_code_pool WHERE short_code IN $in;
+      DELETE FROM xsl_00.route_rule WHERE short_code IN $in; DELETE FROM xsl_01.route_rule WHERE short_code IN $in;" >/dev/null
     for c in "${CODES[@]}"; do $RCLI DEL "sl:r:$c" "sl:code:$c" >/dev/null; done
   fi
 }
@@ -100,6 +105,42 @@ C=$(post "$TA" "$BODY2" "idem-$RUN-twice"); CODE1=$(jval "['data']['short_code']
 C=$(post "$TA" "$BODY2" "idem-$RUN-twice"); CODE2=$(jval "['data']['short_code']")
 CODES+=("$CODE1")
 check "idempotent-same-code" "$CODE1" "$CODE2"
+
+# ── 8. M2-31 路由规则双轨（route_rule 行 + route_json.rules 编译产物）
+# 这一段专门补集成测试覆盖不到的东西：HTTP 上 Jackson 的 snake_case 绑定、以及 PUT 新路由本身。
+RULES='{"rules":[
+  {"priority":20,"condition_type":"device","condition_op":"eq","condition_value":"ios",
+   "target_type":"h5","target_url":"https://mock.ticketsales.test/ios"},
+  {"priority":5,"condition_type":"ua_container","condition_op":"eq","condition_value":"micromessenger",
+   "target_type":"app_scheme","target_url":null,"scheme_url":"xyapp://open/order",
+   "fallback_url":"https://mock.ticketsales.test/dl"}]}'
+
+C=$(put_rules "$TA" "$CODE" "$RULES"); check "rules-put-200" 200 "$C"
+# 响应与快照都必须已按 priority 升序——数据面取"第一条匹配"，顺序就是语义
+RRESP=$(python3 -c 'import json;print(",".join(str(r["priority"]) for r in json.load(open("/tmp/m106-body"))["data"]["rules"]))')
+check "rules-response-sorted" "5,20" "$RRESP"
+RJ=$(rule_json "$CODE")
+RSNAP=$(python3 -c 'import json,sys;d=json.loads(sys.stdin.read())["rules"];print(",".join(str(r["priority"]) for r in d)+"|"+d[0]["condition_type"]+"|"+d[0]["scheme_url"])' <<<"$RJ")
+check "rules-route-json" "5,20|ua_container|xyapp://open/order" "$RSNAP"
+CACHE_R=$(python3 -c 'import json,sys;print(",".join(str(r["priority"]) for r in json.loads(sys.stdin.read())["rules"]))' <<<"$($RCLI GET "sl:r:$CODE")")
+check "rules-cache-same-as-route" "5,20" "$CACHE_R"
+N_RULE=$($MYSQL -e "SELECT COUNT(*) FROM (SELECT 1 FROM xsl_00.route_rule WHERE short_code='$CODE' UNION ALL SELECT 1 FROM xsl_01.route_rule WHERE short_code='$CODE') t;" 2>/dev/null | tail -1)
+check "rules-rows-written" 2 "$N_RULE"
+
+# PATCH 元数据不得静默清空规则（route_json 是数据面唯一读取源，掉了就等于规则没了）
+C=$(patch "$TA" "$CODE" '{"access_limit":200}'); check "rules-survive-patch-200" 200 "$C"
+N_AFTER=$(python3 -c 'import json,sys;print(len(json.loads(sys.stdin.read())["rules"]))' <<<"$(rule_json "$CODE")")
+check "rules-survive-patch" 2 "$N_AFTER"
+
+# 非法规则 → 400 SL-4002；他租户 → 403；空数组 = 清空
+C=$(put_rules "$TA" "$CODE" '{"rules":[{"priority":1,"condition_type":"ua_country","condition_op":"eq","condition_value":"cn","target_type":"h5","target_url":"https://mock.ticketsales.test/x"}]}')
+check "rules-bad-condition-type-400" 400 "$C"
+check "rules-bad-condition-code" "SL-4002" "$(jval "['code']")"
+C=$(put_rules "$TB" "$CODE" '{"rules":[{"priority":1,"condition_type":"device","condition_op":"eq","condition_value":"ios","target_type":"h5","target_url":"https://mock.ticketsales.test/x"}]}')
+check "rules-cross-tenant-403" 403 "$C"
+C=$(put_rules "$TA" "$CODE" '{"rules":[]}'); check "rules-clear-200" 200 "$C"
+N_ZERO=$($MYSQL -e "SELECT COUNT(*) FROM (SELECT 1 FROM xsl_00.route_rule WHERE short_code='$CODE' UNION ALL SELECT 1 FROM xsl_01.route_rule WHERE short_code='$CODE') t;" 2>/dev/null | tail -1)
+check "rules-cleared-rows" 0 "$N_ZERO"
 
 echo "== $pass passed, $fail failed =="
 [[ $fail -eq 0 ]]

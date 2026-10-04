@@ -8,6 +8,7 @@ import com.xingyan.shortlink.admin.pool.ShortCodePoolService;
 import com.xingyan.shortlink.common.admission.UrlAdmissionChecker;
 import com.xingyan.shortlink.common.error.ErrorCode;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
+import com.xingyan.shortlink.common.route.RouteRule;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -27,6 +28,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -85,9 +87,11 @@ class LinkServiceIntegrationTest {
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         ShortCodePoolService pool = new ShortCodePoolService(redis, jdbc, NS, 200, 0.2);
-        service = new LinkService(redis, jdbc, pool,
-                new UrlAdmissionChecker(Set.of("mock.ticketsales.test", ".xystage.test")),
-                new SnowflakeIdGenerator(3), new LinkTxWriter(jdbc, mapper), mapper, "xy1.test");
+        UrlAdmissionChecker checker = new UrlAdmissionChecker(Set.of("mock.ticketsales.test", ".xystage.test"));
+        RouteRuleService ruleService = new RouteRuleService(jdbc, checker);
+        service = new LinkService(redis, jdbc, pool, checker,
+                new SnowflakeIdGenerator(3), new LinkTxWriter(jdbc, mapper, ruleService), mapper,
+                ruleService, "xy1.test");
     }
 
     @AfterEach
@@ -102,6 +106,7 @@ class LinkServiceIntegrationTest {
         jdbc.update("DELETE FROM link_route WHERE short_code IN (" + ph + ")", args);
         jdbc.update("DELETE FROM code_tenant_index WHERE short_code IN (" + ph + ")", args);
         jdbc.update("DELETE FROM outbox WHERE aggregate_id IN (" + ph + ")", args);
+        jdbc.update("DELETE FROM route_rule WHERE short_code IN (" + ph + ")", args);
         jdbc.update("DELETE FROM short_code_pool WHERE short_code IN (" + ph + ")", args);
         for (String code : createdCodes) {
             redis.delete(List.of("sl:r:" + code, "sl:code:" + code));
@@ -119,7 +124,7 @@ class LinkServiceIntegrationTest {
     private CreateLinkRequest req(String originUrl, String shortCode, LocalDateTime expire,
                                   Integer accessLimit, Integer redirectType, Integer rateLimitPerMinute) {
         return new CreateLinkRequest(originUrl, "ch-wechat", "cp-autumn", "p-9", shortCode, expire,
-                accessLimit, redirectType, rateLimitPerMinute);
+                accessLimit, redirectType, rateLimitPerMinute, null);
     }
 
     private Map<String, Object> createAndTrack(long tenant, CreateLinkRequest r) {
@@ -184,7 +189,7 @@ class LinkServiceIntegrationTest {
     @Test
     void rejectsInvalidPayload() {
         var noChannel = assertThrows(BizException.class, () -> service.create(TENANT_A,
-                new CreateLinkRequest(OK_URL, null, "cp1", null, null, null, null, null, null)));
+                new CreateLinkRequest(OK_URL, null, "cp1", null, null, null, null, null, null, null)));
         assertEquals(ErrorCode.VALIDATION_FAILED, noChannel.getErrorCode());
 
         var pastExpire = assertThrows(BizException.class,
@@ -326,8 +331,186 @@ class LinkServiceIntegrationTest {
         assertTrue(node.get("expire_time").isNull(), "null 字段应显式序列化，跳转侧按 key 读取");
     }
 
-    private static com.fasterxml.jackson.databind.JsonNode readJson(String json) {
-        try {
+    // ---------------- M2-31 route_rule 双轨：编译产物（route_json.rules）+ 行式真源（route_rule） ----------------
+
+    @Test
+    void rulesCompileIntoSortedRouteJsonAndRows() {
+        // 故意乱序提交：编译产物必须按 priority 升序，数据面靠"第一个匹配"决策，顺序就是语义
+        List<RouteRule> incoming = List.of(
+                h5(20, RouteRule.DEVICE, "in", "ios,android", "https://mock.ticketsales.test/app-h5"),
+                h5(5, RouteRule.UA_CONTAINER, "eq", "micromessenger", "https://mock.ticketsales.test/wx"),
+                h5(10, RouteRule.GEO_PROVINCE, "eq", "上海", "https://mock.ticketsales.test/sh"));
+        Map<String, Object> data = createAndTrack(TENANT_A,
+                new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "ruleord01", null, null, null, null, incoming));
+
+        assertEquals(List.of(5, 10, 20), priorities(data.get("rules")), "响应里的规则要有序");
+
+        var dbRules = readJson(jdbc.queryForObject(
+                "SELECT route_json FROM link_route WHERE short_code = ?", String.class, "ruleord01")).path("rules");
+        assertEquals(List.of(5, 10, 20), jsonPriorities(dbRules), "route_json.rules 是编译产物，必须已排序");
+        assertEquals("micromessenger", dbRules.get(0).path("condition_value").asText());
+        assertTrue(dbRules.get(0).has("condition_type"), "快照里的键是 snake_case（jump 用同一份命名策略反序列化）");
+
+        var cachedRules = readJson(redis.opsForValue().get("sl:r:ruleord01")).path("rules");
+        assertEquals(jsonPriorities(dbRules), jsonPriorities(cachedRules), "缓存与 link_route 必须是同一份编译产物");
+
+        List<Integer> rowPriorities = jdbc.queryForList(
+                "SELECT priority FROM route_rule WHERE tenant_id = ? AND short_code = ? ORDER BY priority",
+                Integer.class, TENANT_A, "ruleord01");
+        assertEquals(List.of(5, 10, 20), rowPriorities, "行式真源与编译产物同源同序");
+    }
+
+    @Test
+    void nonH5TargetsRoundTripThroughColumns() {
+        // app_scheme 用 scheme_url+fallback_url、wx_urllink 用 scheme_url 位放小程序 path：
+        // 这两类走的是 DDL 新加的列，不落行就等于"M2-33 的中间页拿不到降级目标"
+        createAndTrack(TENANT_A, new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "ruletype1",
+                null, null, null, null, List.of(
+                new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "micromessenger", RouteRule.T_WX_URLLINK,
+                        "https://mock.ticketsales.test/mp-fallback", "/pages/order/detail?id=9", null),
+                new RouteRule(2, RouteRule.DEVICE, "eq", "ios", RouteRule.T_APP_SCHEME,
+                        null, "xyapp://open/order?id=9", "https://mock.ticketsales.test/dl-guide"))));
+
+        var rules = readJson(jdbc.queryForObject(
+                "SELECT route_json FROM link_route WHERE short_code = ?", String.class, "ruletype1")).path("rules");
+        assertEquals("wx_urllink", rules.get(0).path("target_type").asText());
+        assertEquals("/pages/order/detail?id=9", rules.get(0).path("scheme_url").asText());
+        assertEquals("xyapp://open/order?id=9", rules.get(1).path("scheme_url").asText());
+        assertEquals("https://mock.ticketsales.test/dl-guide", rules.get(1).path("fallback_url").asText());
+        assertFalse(rules.get(0).has("default"), "派生方法不该被序列化进快照");
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT target_type, target_url, scheme_url, fallback_url FROM route_rule WHERE short_code = ? AND priority = 2",
+                "ruletype1");
+        assertEquals("app_scheme", row.get("target_type"));
+        assertEquals("xyapp://open/order?id=9", row.get("scheme_url"));
+        assertEquals("https://mock.ticketsales.test/dl-guide", row.get("fallback_url"));
+        assertNull(row.get("target_url"), "app_scheme 不填 target_url");
+    }
+
+    @Test
+    void replaceRulesBumpsVersionAndKeepsMetadata() {
+        createAndTrack(TENANT_A, new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "ruleput01",
+                null, 700, null, 3000, List.of(h5(1, RouteRule.UA_CONTAINER, "eq", "douyin", OK_URL))));
+
+        Map<String, Object> result = service.updateRules(TENANT_A, "ruleput01", List.of(
+                h5(2, RouteRule.DEVICE, "eq", "desktop", "https://mock.ticketsales.test/pc"),
+                h5(1, RouteRule.UA_CONTAINER, "eq", "alipay", "https://mock.ticketsales.test/alipay")));
+
+        assertEquals(List.of(1, 2), priorities(result.get("rules")));
+        assertEquals(2L, result.get("route_version"), "PUT 规则是一次发布：version 必须递增");
+        assertEquals(2L, jdbc.queryForObject("SELECT version FROM link_route WHERE short_code = ?", Long.class, "ruleput01"));
+
+        var snapshot = readJson(redis.opsForValue().get("sl:r:ruleput01"));
+        assertEquals(List.of(1, 2), jsonPriorities(snapshot.path("rules")));
+        assertEquals(700, snapshot.path("access_limit").asInt(), "换规则不得动元数据");
+        assertEquals(3000, snapshot.path("rate_limit_per_minute").asInt());
+        assertEquals(OK_URL, snapshot.path("origin_url").asText());
+
+        List<String> conditions = jdbc.queryForList(
+                "SELECT CONCAT(condition_type,':',condition_value) FROM route_rule WHERE short_code = ? ORDER BY priority",
+                String.class, "ruleput01");
+        assertEquals(List.of("ua_container:alipay", "device:desktop"), conditions, "整体替换：旧规则不留行");
+
+        List<String> events = jdbc.queryForList(
+                "SELECT event_type FROM outbox WHERE aggregate_id = ? AND tenant_id = ? ORDER BY id",
+                String.class, "ruleput01", TENANT_A);
+        assertEquals(List.of("LINK_CREATED", "LINK_UPDATED"), events);
+    }
+
+    @Test
+    void patchMetadataDoesNotClearRules() {
+        createAndTrack(TENANT_A, new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "rulekeep1",
+                null, null, null, null, List.of(h5(1, RouteRule.UA_CONTAINER, "eq", "weibo", OK_URL),
+                h5(2, RouteRule.DEFAULT, "any", null, "https://mock.ticketsales.test/fallback"))));
+
+        service.update(TENANT_A, "rulekeep1", new UpdateLinkRequest(LocalDateTime.now().plusDays(2), 9, null, null));
+
+        var snapshot = readJson(jdbc.queryForObject(
+                "SELECT route_json FROM link_route WHERE short_code = ?", String.class, "rulekeep1"));
+        assertEquals(2, snapshot.path("rules").size(), "PATCH 只改元数据，编译产物里的 rules 不能掉");
+        assertEquals(9, snapshot.path("access_limit").asInt());
+        assertEquals(snapshot.path("rules"), readJson(redis.opsForValue().get("sl:r:rulekeep1")).path("rules"),
+                "缓存与 link_route 是同一份产物（DB JSON 列会重排键序，按树比较）");
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM route_rule WHERE short_code = ?", Integer.class, "rulekeep1"));
+    }
+
+    @Test
+    void rejectsIllegalRuleSetsWith400() {
+        // 每类都要"改一处即可复现"的粒度：错误信息带上可选值，规则是给人配的
+        assertRuleRejected(List.of(h5(1, "ua_country", "eq", "cn", OK_URL)), "condition_type");
+        assertRuleRejected(List.of(h5(1, RouteRule.UA_CONTAINER, "gt", "qq", OK_URL)), "not allowed");
+        assertRuleRejected(List.of(h5(1, RouteRule.UA_CONTAINER, "eq", "instagram", OK_URL)), "unknown ua_container");
+        assertRuleRejected(List.of(h5(1, RouteRule.DEVICE, "eq", "symbian", OK_URL)), "unknown device");
+        assertRuleRejected(List.of(
+                h5(1, RouteRule.UA_CONTAINER, "eq", "qq", OK_URL),
+                h5(1, RouteRule.DEVICE, "eq", "ios", OK_URL)), "duplicated priority");
+        assertRuleRejected(List.of(
+                h5(1, RouteRule.DEFAULT, "any", null, OK_URL),
+                h5(2, RouteRule.DEFAULT, "any", null, OK_URL)), "default");
+        assertRuleRejected(List.of(
+                h5(1, RouteRule.UA_CONTAINER, "eq", "qq", OK_URL),
+                h5(2, RouteRule.UA_CONTAINER, "eq", "qq", "https://mock.ticketsales.test/other")), "duplicated condition");
+        assertRuleRejected(List.of(h5(1, RouteRule.TIME_WINDOW, "between", "[\"2026-09-30\",\"2026-09-20\"]", OK_URL)),
+                "must not be after");
+        assertRuleRejected(List.of(h5(1, RouteRule.TIME_WINDOW, "between", "2026-09-20", OK_URL)), "JSON array");
+        assertRuleRejected(List.of(h5(1, RouteRule.UA_CONTAINER, "eq", "qq", "https://evil.test/p")), "target_url rejected");
+        assertRuleRejected(List.of(new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "qq",
+                RouteRule.T_APP_SCHEME, null, null, OK_URL)), "needs a valid scheme_url");
+        assertRuleRejected(List.of(new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "qq",
+                RouteRule.T_APP_SCHEME, null, "https://mock.ticketsales.test/x", null)), "scheme_url must not be http(s)");
+        assertRuleRejected(List.of(new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "qq",
+                RouteRule.T_APP_SCHEME, null, "xyapp://open/order", "http://mock.ticketsales.test/fb")), "fallback_url rejected");
+
+        assertTrue(jdbc.queryForList("SELECT 1 FROM code_tenant_index WHERE short_code = ?", Integer.class, "badrule01").isEmpty(),
+                "规则非法时不应占用短码（校验在 allocateCode 之前）");
+    }
+
+    @Test
+    void rulesAreTenantScoped() {
+        createAndTrack(TENANT_A, new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "rulescope",
+                null, null, null, null, List.of(h5(1, RouteRule.UA_CONTAINER, "eq", "qq", OK_URL))));
+
+        var forbidden = assertThrows(BizException.class, () -> service.updateRules(TENANT_B, "rulescope",
+                List.of(h5(1, RouteRule.UA_CONTAINER, "eq", "douyin", OK_URL))));
+        assertEquals(ErrorCode.LINK_FORBIDDEN, forbidden.getErrorCode());
+        assertEquals(HttpStatus.FORBIDDEN, forbidden.getStatus());
+
+        assertEquals(List.of("ua_container:qq"), jdbc.queryForList(
+                "SELECT CONCAT(condition_type,':',condition_value) FROM route_rule WHERE short_code = ?", String.class, "rulescope"));
+        assertEquals(1L, jdbc.queryForObject("SELECT version FROM link_route WHERE short_code = ?", Long.class, "rulescope"),
+                "越权请求不得留下任何写痕");
+
+        // 同名规则在另一租户下是独立的一行：分片轴 tenant_id 决定它落在哪个库
+        createAndTrack(TENANT_B, new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "rulescopb",
+                null, null, null, null, List.of(h5(1, RouteRule.DEVICE, "eq", "ios", OK_URL))));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM route_rule WHERE short_code = ?", Integer.class, "rulescopb"));
+    }
+
+    private void assertRuleRejected(List<RouteRule> rules, String expectedMessagePart) {
+        var e = assertThrows(BizException.class, () -> createAndTrack(TENANT_A,
+                new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "badrule01",
+                        null, null, null, null, rules)), expectedMessagePart);
+        assertEquals(ErrorCode.VALIDATION_FAILED, e.getErrorCode());
+        assertEquals(HttpStatus.BAD_REQUEST, e.getStatus());
+        assertTrue(e.getMessage().contains(expectedMessagePart), e.getMessage());
+    }
+
+    private static RouteRule h5(int priority, String conditionType, String op, String value, String targetUrl) {
+        return new RouteRule(priority, conditionType, op, value, RouteRule.T_H5, targetUrl, null, null);
+    }
+
+    private static List<Integer> priorities(Object rules) {
+        return ((List<?>) rules).stream().map(r -> ((RouteRule) r).priority()).toList();
+    }
+
+    private static List<Integer> jsonPriorities(com.fasterxml.jackson.databind.JsonNode rules) {
+        List<Integer> out = new ArrayList<>();
+        rules.forEach(r -> out.add(r.path("priority").asInt()));
+        return out;
+    }
+
+    private static com.fasterxml.jackson.databind.JsonNode readJson(String json) {        try {
             return JSON.readTree(json);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new IllegalStateException("invalid json: " + json, e);

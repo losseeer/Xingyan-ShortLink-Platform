@@ -2,7 +2,7 @@
 
 **项目名称**：星演宣发短链平台（Xingyan ShortLink Platform）
 
-**版本**：v2.5.0（v2.0 修订自初稿，v2.1 单机环境收敛，v2.1.1 修正单机/单实例混同，v2.2 确定 Vue 看板与 monorepo 代码组织，v2.2.1 随 m1 收口在 1.3 增"实测"列，v2.2.2 回填 M1-11 压测实测值含未达标项，v2.2.3 由 M2-00 修正延迟 SLO 的判定负载并回填归因，v2.3.0 防刷主线：频控第 2 层落地口径与 access_limit 对账落点，v2.4.0 M2-01 事件链批量化并改写容量上限归属，v2.5.0 动态路由引擎的实现口径（特征表自维护、能力边界、真回退开关）；修订记录见附录 A）
+**版本**：v2.6.0（v2.0 修订自初稿，v2.1 单机环境收敛，v2.1.1 修正单机/单实例混同，v2.2 确定 Vue 看板与 monorepo 代码组织，v2.2.1 随 m1 收口在 1.3 增"实测"列，v2.2.2 回填 M1-11 压测实测值含未达标项，v2.2.3 由 M2-00 修正延迟 SLO 的判定负载并回填归因，v2.3.0 防刷主线：频控第 2 层落地口径与 access_limit 对账落点，v2.4.0 M2-01 事件链批量化并改写容量上限归属，v2.5.0 动态路由引擎的实现口径（特征表自维护、能力边界、真回退开关），v2.6.0 M2-31 route_rule 双轨落地：`route_json.rules` 实际形状与六条落地口径；修订记录见附录 A）
 
 **项目性质**：个人独立项目（非企业合作项目）。全部组件按常规个人 PC（16G 内存、Docker Compose 单机）部署设计；原企业级能力（分片、多可用区、跨团队契约）保留为**设计推演**，实现上做单机化收敛并全部可本地验证（见 3.3、8.1）。
 
@@ -397,20 +397,24 @@ Xingyan-ShortLink-Platform/          # 实际仓库名（下图按 m1 收口时�
 
 **两级路由模型（修正初稿"302 完成唤起降级"的不可行描述）**：
 
-- **服务端一级决策**：跳转服务读取 `route_rule`（按 priority 升序，首条匹配生效），条件维度：UA 容器（micromessenger/douyin/qq）、device、geo_province、time_window。
+- **服务端一级决策**：跳转服务读取编译进 `route_json.rules` 的**快照**（已按 priority 升序，首条匹配生效），不回查 `route_rule`；条件维度：UA 容器（micromessenger/douyin/qq）、device、geo_province、time_window。`route_rule` 是管理面的**行式真源**（逐条可校验、可查冲突），二者是"源→编译产物"的关系（见下"双轨"）。
 - **客户端二级降级**：一级决策目标为 `app_scheme` 或小程序时，返回**中间页**（HTML，本身可缓存 CDN）：
   - 微信容器 + 目标小程序：服务端调用微信开放接口生成 **URL Link / Scheme**（带 30 天有效期控制），中间页直接跳转；失败展示引导。
   - 抖音等容器 + App：中间页 JS `location.href = xingyan://...`，`setTimeout(2.5s)` 内未触发 `visibilitychange/pagehide` 则降级 `location.href = h5_url`；iOS 优先 **Universal Link**（无失败态、更可靠）。
 
-规则示例（存储为 JSON，缓存在 `route_json`）：
+`route_json.rules` 的实际形状（M2-31 落地形状；一行 = 一个条件维度 + 一个目标）：
 
 ```json
-[
-  {"priority":10,"when":{"ua_container":"micromessenger"},"then":{"target":"wx_urllink","path":"pages/ticket/detail?itemId=123"}},
-  {"priority":20,"when":{"ua_container":"douyin"},"then":{"target":"app_scheme","scheme":"xingyan://item/detail?id=123","fallback":"https://m.xingyan.com/item/123"}},
-  {"priority":30,"when":{"geo_province":"上海","time":["2026-09-20","2026-09-30"]},"then":{"target":"h5","url":"https://m.xingyan.com/shanghai/pre-sale"}},
-  {"priority":99,"when":{"default":true},"then":{"target":"h5","url":"https://m.xingyan.com/item/123"}}
-]
+{"origin_url":"https://m.xingyan.com/item/123","version":3,"rules":[
+  {"priority":10,"condition_type":"ua_container","condition_op":"eq","condition_value":"micromessenger",
+   "target_type":"wx_urllink","target_url":"https://m.xingyan.com/item/123","scheme_url":"pages/ticket/detail?itemId=123","fallback_url":null},
+  {"priority":20,"condition_type":"ua_container","condition_op":"eq","condition_value":"douyin",
+   "target_type":"app_scheme","target_url":null,"scheme_url":"xingyan://item/detail?id=123","fallback_url":"https://m.xingyan.com/item/123"},
+  {"priority":30,"condition_type":"time_window","condition_op":"between","condition_value":"[\"2026-09-20\",\"2026-09-30\"]",
+   "target_type":"h5","target_url":"https://m.xingyan.com/shanghai/pre-sale","scheme_url":null,"fallback_url":null},
+  {"priority":99,"condition_type":"default","condition_op":"any","condition_value":null,
+   "target_type":"h5","target_url":"https://m.xingyan.com/item/123","scheme_url":null,"fallback_url":null}
+]}
 ```
 
 UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律落到 default 规则（H5），保证新环境不误伤。
@@ -423,6 +427,15 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 - **`wx_urllink` 是接口位 + 本地 mock provider，不接真实微信开放接口**：个人项目没有公众号凭据，也不该把外部 API 写进单机验收路径。`UrlLinkProvider` 接口留好（真实实现只要换一个 bean），本期实现返回可断言的本地 mock 链接。
 - **中间页由 jump 返回 200 HTML**（带 `Cache-Control`，可被 CDN 缓存），不新增服务：302 之后没有 HTML 控制权，所以降级判断只能在服务端给出的这一页里做——这也是"301 被禁用"（5.2）的同一取舍的另一面。
 - **mock 购票页落地为 nginx 静态回显页**（`mock.ticketsales.test`），不建 Java 模块：它只需要回显 query/fragment 供 UA 重放断言与演示看效果；假订单接口与归因回传属 M3。
+
+**双轨的落地口径（M2-31）**：
+
+- **写路径只有一条**：`route_rule` 行（与 `short_link` 同一 `tenant_id` 分片轴、同一本地事务）→ 校验器 → 编译器（按 priority 升序）→ `link_route.route_json.rules` + Redis 快照。jump 的 `sharding.yaml` 里不声明 `route_rule`，数据面因此拿不到"回查真源"这条退路——这是 3.4 气分离的延续，也让"缓存与库里不一致"变成可直接判定的实现 bug 而不是运行时自愈问题。
+- **一条规则只有一个条件维度**（`(condition_type, condition_op, condition_value)` 三元组 + 一个目标）。初稿示例里"上海 **且** 大促期内"那种同条 AND 组合**未实现**：要表达就写两条不同 priority 的规则近似，或等 `route_rule` 加列。这个收窄写在这里是为了让"通用三元组"不被误读成"已支持组合条件"。
+- **算子按维度收窄**：枚举类（ua_container/device/geo_province）只接受 `eq|in`，`time_window` 只接受 `between`（值形如 `["2026-09-20","2026-09-30"]`），`default` 只接受 `any`；表注释里的 `gt` 不受理——这几类条件没有可比大小语义，留着只会让人以为能配出"号段之后生效"。`app_scheme` 的 `scheme_url` 同样禁 `http(s)`（那就是 h5 规则，混淆了中间页的降级判定）。
+- **`PUT /links/{code}/rules` 是整体替换**：规则集合是有顺序语义的整体，逐条 patch 的合并语义容易让人配出一套自己也预测不了结果的规则集。空数组即清空；`rules` 为空时快照里写显式 `"rules": null`，与快照其余字段同口径（null 字段一律序列化出来、跳转侧按 key 读，由 `routeJsonContainsExplicitNulls` 用例钉住），数据面按 `rulesOrEmpty()` 收口，M1 写的老快照（没有这个键）因此走同一条路径。
+- **两处顺序约束**：规则校验在短码分配**之前**（非法规则不该占用 `sl:code:*` CLAIM 和池码）；`PATCH /links/{code}` 改元数据时必须把既有规则带进新快照重编译，否则"改了个过期时间"会静默清空规则——由 `patchMetadataDoesNotClearRules` 用例与 `accept-m1-06` 第 8 段钉住。
+- 版本递增与缓存回写沿用 `PATCH` 那条现路径（version+1 → 写 `link_route` → 回写 Redis）。**跨实例缓存失效仍是 Pub/Sub 缺位的那格（M3）**：本期单机下靠 TTL + 冷重建收口，验收里 jump×2 的一致性以"重编译后两份快照同源"为准。
 
 ### 6.3 归因数据链路
 
@@ -649,6 +662,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 | （v2.3.0，M2-10 防刷主线细化）初稿把频控写成"滑动窗口"、把它排在 `access_limit` 扣减**之后**、且默认接受 `X-Forwarded-For` 首元素 | 三处都会在实现时暴露成实际问题：① 多键 Lua 与 8.1-B「键设计无跨槽约束」的扩展承诺冲突，且 ×2 实例下上一槽计数走进程内会因轮询被劈半；② 按原序，攻击者可用高频请求在数秒内烧光链接配额（限流反成 DoS 面）；③ XFF 首元素由客户端可控，频控可直接绕过 | 5.2 把频控提到有效性检查之前；5.3 第 2 层按实现改口径为**固定 60s 窗口**并写明两条不做滑动的理由与边界代价（最坏 2× 阈值），真滑动连同 hash tag 留作后续；IP 统一取 nginx 覆盖写入的 `X-Real-IP`（回落 XFF 末段→remoteAddr），4.2 的 `ip_hash` 同此口径；4.3 键表、8.4 对账落点（快照列在 `link_route`、回写任务在 sl-admin、jump 只在冷路径读）一并回写。5.3 增"实施进度"说明 `risk_score` 自本期起不再恒 0 |
 | （v2.4.0，M2-01）8.1-A 第 4 条与 1.3 吞吐行写死了一个结论：**上限由 ClickHouse 写入/合并决定** | 那句话在当时是实测正确的（负载中 CH ≈1.9 核、停 consumer 后同一入口 24,525 QPS），但它没标明自己是**某个实现状态下的结论**——批量化做完之后就不再成立 | 按时间线改写而不是覆盖：6.3 补批量语义与两条不变量（`wait_for_async_insert=1` 保住"写成功才提交 offset"；producer 按 `short_code` 选分区所以码内有序不变）；1.3 延迟行与 8.1-A 吞吐/投递行同时给出改前改后两组数（12,185→18,193 QPS、追赶 29,578→41,223 events/s、事件链 CPU 2.17→0.92 核），第 4 条明确写出"上限归属已随本次改动改变，现在在数据面自身"；**目标 ≥20k 未达成（差 9%）照实记为未达**，不把阈值改成能过的样子 |
 | （v2.5.0，M2-30 动态路由细化）6.2 只写"读 route_rule 按 priority 匹配、UA 库月度更新、微信 URL Link"，读起来像已具备的能力清单 | 三处会在实现时变含糊：①"UA 解析库"没说自研还是引库、如何更新；② `geo_province`/时间窗依赖的离线地理库单机根本没有，条件却列在表里；③ `wx_urllink` 暗示已接微信。另有第十章的"纯 302 回退开关"在代码里从来只是注释（`JumpResolver` 只有一个实现、无条件装配） | 6.2 增"实现口径"六条：特征表自维护 + 配置加载（"月度更新"＝改配置不改代码）、未识别一律 default（代价：覆盖窄；收益：新容器不被误伤）、未知事实不匹配（geo 恒未知是**能力边界**不是缺陷）、`xsl.jump.mode` 必须做成真条件装配、`wx_urllink` 是 provider 接口 + 本地 mock（不接真实微信 API）、中间页由 jump 返 200 HTML（与禁用 301 同一取舍的两面）、mock 购票页用 nginx 静态回显不建 Java 模块。三处"文档承诺无实现"（mode 假开关、route_rule 零引用、outbox 无读方）记入 ITER-M2 §4 |
+| （v2.6.0，M2-31 双轨落地）6.2 的规则示例写成 `{"when":{...},"then":{...}}` 嵌套形状，且"跳转服务读取 `route_rule`" | 实现出来的不是这个形状也不是这个读取源：一行只承载**一个**条件维度（`(type,op,value)` 三元组 + 目标三列），同条 AND 组合（示例里的"上海且大促期内"）没有；数据面读的是 `route_json.rules` 编译产物，jump 的 `sharding.yaml` 里根本没有 `route_rule`。留着原示例，M2-33 的实现者会照嵌套形状解不出快照 | 示例换成实际形状并把读取源改为快照；新增"双轨的落地口径"六条（单一写路径、单条件维度、算子按维度收窄且 `gt`/`http(s)` scheme 不受理、`PUT` 整体替换与 `"rules": null` 显式序列化、校验前置于短码分配 + PATCH 必带既有规则重编译、版本与缓存回写沿用 PATCH 那条现路径）。跨实例缓存失效仍标为 M3 那一格，本期靠 TTL/冷重建收口 |
 
 ## 附录 B：归因字段契约（与星演购票页/宣发平台对齐）
 

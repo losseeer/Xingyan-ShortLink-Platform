@@ -25,6 +25,8 @@
 | M2-24 设计回写与收口 | ✅ 计划内 | ✅ 完成（2026-10-03） | DESIGN 1.3 延迟行、8.1-A 吞吐/投递行与第 4 条"上限归属"改写（那条结论当时成立、被本次改动改变，按时间线写清）；6.3 补批量语义与两条不变量（`wait_for_async_insert=1`、码内有序）；回归见 §3 末行 |
 | 其余 M2 项（Cuckoo、route_rule 双轨、UA 引擎、中间页、评分、配额、Sentinel） | ✅ M2 计划内 | 未开始 | 进入前按 M1 格式细化任务表 |
 | 动态路由主线（route_rule 双轨 + UA 引擎 + 中间页） | ✅ M2 计划内 | **进行中**（2026-10-03 开工，细化为 M2-30…M2-36） | 细表在 [DEVELOPMENT_PLAN](../DEVELOPMENT_PLAN.md)「二-B」。摸底先把三处"文档说做了、代码里没有"记进 §4：`xsl.jump.mode` 只是注释、`route_rule` Java 零引用、outbox 只有写方没有同步方 |
+| M2-30 口径先于代码（六条实现口径 + 任务表） | ✅ 计划内（细化时新增） | ✅ 完成（2026-10-03，`e583728`） | DESIGN 6.2 增"实现口径"六条（特征表自维护、未知不匹配、真开关、`wx_urllink` 走 mock provider、中间页由 jump 返 HTML、mock 购票页 nginx 静态）；DEVELOPMENT_PLAN 新增「二-B」任务表 |
+| M2-31 route_rule 双轨：校验器 + 编译器 + 规则 API | ✅ 计划内 | ✅ 完成（2026-10-04） | `sl-common` 加 `RouteRule/UaContainer/UaDevice`，`RouteConfig` 加 `rules`；`sl-admin` 加 `RouteRuleService`（校验 + 按 priority 编译）与 `PUT /links/{code}/rules`，规则与 `short_link` 同事务写 `route_rule`；DDL 补 `scheme_url/fallback_url`、`target_url` 改可空、`uk_code_priority`。jump 仍只读 `link_route`（气分离）。验证见 §3「M2-31 双轨」行 |
 
 ## 3. 实测数字与凭证
 
@@ -44,6 +46,8 @@
 | 频控 Lua 基线（8.1-A 最后一项未测） | ≥3 万次/s（目标未写连接数，见 §4） | 同一份脚本、`-P 1` 不流水线：**单连接 27,803/s**（avg 0.034ms、p99 0.095ms，比目标低 7%）、**10 连接 166,852/s**、**50 连接 211,894/s**（超 5.6–7.1 倍）。按"能否撑住跳转"判定：**达标**（jump 端到端上限 ~13.8k QPS 由两实例分摊） | `bench/reports/2026-10-03-1652-m2-14-ratelimit-lua.md` |
 | 频控上线后跳转不退化 | P99<50ms @ ≥2000 QPS 维持 | ✅ 仍达标：40s 档复跑 4,536／5,389／5,958 QPS 时 P99 = **5.36／20.32／20.61ms**；jump 自测均值 0.124–0.247ms → **0.328–0.937ms**（每请求多一次 EVAL + 阈值判定），绝对值仍 <1ms、尾延迟构成未变 | `bench/reports/2026-10-03-1656-m2-00-jump-loadcurve.md`（同日 20s 档首跑见 `-1653-`，其 c=4 的 p99 50.79ms 是采样噪声，见 §4） |
 | 配置变更后的旧验收复跑 | 动了 nginx/jump/compose 三处配置，不得回归既有链路 | ✅ **0 回归**（2026-10-03 14:38，同一台机器、改后重启的栈上）：`accept-m1-07.sh` **15/15**（302/404/403/410 语义 + 冷码回源二查命中缓存 db 计数 2.0→2.0）、`accept-m1-10.sh` **19/19**（三域同一 Location、双实例承载 32/32、滚动重启窗口 5,632 击全 302／**0×5xx**、管理面宕机不影响跳转、未登记 Host 444） | 脚本输出即凭证；改动面＝`nginx.conf` 的 `log_format`（新增 `rt/uct/urt`）、`sl-jump/application.yml`（开启 HTTP 分位数）、compose 的 jump `mem_limit` |
+
+| M2-31 双轨落地的验证（本轮无性能数字，凭证是行为断言） | 规则要"存得下、编得出、清不掉" | `LinkServiceIntegrationTest` **15 测全绿**（本期新增 6 条：三规则乱序→有序、PUT 后 version+1 且元数据不变、PATCH 元数据不清空 rules、13 种非法规则逐个 400、跨租户 PUT→403 且零写痕、`app_scheme/wx_urllink` 的 `scheme_url/fallback_url` 双列往返）。`accept-m1-06` 从 21 项扩到 **33 项**（新增第 8 段：HTTP 上 `rules[]` 的 snake_case 绑定、响应/`route_json`/Redis 三处同源同序、`route_rule` 行数、非法规则不占码、空数组清空）；旧验收在**含 rules 的新 build** 上全绿：`make verify` 全仓 **90 测 / 0 失败**，`accept-m1-07` **15/15**、`accept-m1-09` **14/14**、`accept-m1-10` **19/19**、`accept-m2-13` **17/17**（`route_json` 多了 `rules` 键 ⇒ 按回归纪律把 jump 侧链路全部重跑） | 脚本输出即凭证；契约变更清单＝`route_json` 增 `rules`（无规则时为显式 `null`）+ 新增 `PUT /links/{code}/rules` + `POST /links` 受理 `rules[]` + `route_rule` 表首次被 Java 侧读写 |
 
 > 口径纪律：仅此处出现且可点达的实测值可进入简历/分享；目标值不得冒充实测。
 
@@ -80,6 +84,18 @@
 | **`route_rule` 有表、有分片配置、设计里有示例 JSON，但 Java 侧零引用** | M1-02 按 DESIGN 4.1 全量建表，双轨的"行式真源→编译 route_json"那一半属 M2，一直没接 | M2-31 补校验器/编译器/规则 API，让 `route_json.rules` 成为真的编译产物；jump 继续只读 `link_route`（它的分片配置里没有 route_rule，这是刻意的气分离） |
 | **outbox 只有写方没有读方**（`LINK_CREATED`/`LINK_UPDATED` 落表后 status 恒为 0） | 同步器排在 M3，但表先建好了，读者容易以为事件通道已在使用 | 本轮不扩范围（沿用现路径直写 route_json），只在 DEVELOPMENT_PLAN 二-B 与本行写明它是 M3 的活儿 |
 
+M2-31 实现期间的口径收窄与自查（2026-10-04），性质分两类：**故意比设计窄**（前两条）与**我自己写错、被测试或工具抓到**（后五条）：
+
+| 偏差点 | 原因 | 处理 |
+|---|---|---|
+| **算子按维度收窄，`gt` 不受理**（DESIGN 4.1 的 `route_rule.condition_op` 注释里写着 `eq/in/gt/between/any`） | `ua_container/device/geo_province` 都是枚举、`time_window` 是区间，"大于"对它们没有可比语义；受理了不报错，只会让人以为能配出"号段之后生效"这类规则 | `RouteRuleService.ALLOWED_OPS` 按维度给白名单（枚举类 `eq\|in`、`time_window` 只 `between`、`default` 只 `any`），表注释与 DESIGN 6.2「双轨的落地口径」同步；`app_scheme` 的 `scheme_url` 另外禁 `http(s)`——填 https 就等于 h5 规则，会把中间页的降级判定变成死代码 |
+| **一条规则只有一个条件维度**，DESIGN 6.2 示例里"geo_province=上海 **且** time 在档期内"的组合条件实现不了 | 行式模型是通用 `(type, op, value)` 三元组（4.1 就这么定的），给每条规则加一组维度列，校验器和编译器的复杂度会翻倍，而本期唯一会用到的组合（geo+time）里 geo 恒为未知 | 示例改成实际形状并在 6.2 写明"同条 AND 未实现，要表达就拆成不同 priority 的两条"；`geo_province` 本身在离线地理库接入前恒不匹配（M2-30 已定为能力边界） |
+| **`RouteRule.isDefault()` 被 Jackson 当成属性**，快照里凭空多出 `"default": false`，且键序与库里不同 | 记录类之外的 `isXxx()` 布尔方法在 Jackson 眼里就是 getter；第一版想加 `@JsonIgnore`，但 `sl-common` 是**零运行时依赖**模块（只有 test scope 的 junit/jqwik），为一个注解引 jackson-annotations 不值 | 改名 `unconditional()`（不带 `is/get` 前缀就不被识别），并把"为什么不能叫 isDefault"写进方法注释。测试侧同时把"缓存 vs `link_route`"从字符串比较改成**树比较**——MySQL 的 JSON 列会重排键序，字符串比较得到的"不一致"是假的 |
+| **规则校验原本写在短码分配之后**（我第一版的顺序） | 非法规则请求会先 `SETNX sl:code:{code}` 并租用池码，随后才 400——同一个自定义码第二次合法请求变成 409 `SHORT_CODE_TAKEN`，等于用一个语法错误占住别人的码 | `validateAndCompile` 挪到 `allocateCode` 之前；`accept-m1-06` 第 8 段与集成用例各钉一次（`code_tenant_index` 里查不到那个码） |
+| **`PATCH /links/{code}` 会把规则静默清空**（同一类"重编译快照时漏带字段"） | `update()` 用 `short_link` 行重建 `RouteConfig`，规则不在那些列里——`rules` 直接变 null。症状是"改了个过期时间，动态路由全量退化成 302"，且没有任何报错 | `update()` 先 `ruleService.load()` 把既有规则带进新快照；回归用例 `patchMetadataDoesNotClearRules` + 验收第 8 段各断言一次。同类风险留给 M2-33：**任何重建快照的路径都必须带全字段**，这条要作为实现约束记住 |
+| `route_rule.id` 第一版用 `(tenant, code.hashCode(), priority)` 拼算术 | `String.hashCode()` 只有 32 位，两个不同短码撞哈希的概率在几十万级就不可忽略；一旦撞上有主键冲突，表现是 500 而原因藏在哈希里，查起来毫无线索 | 换 FNV-1a 64 位哈希并清符号位；仍保持**确定性**（同 `(tenant, code, priority)` 重编译得到同一主键，"整体替换"重试不会留下两套行），只是把冲突概率从 32 位量级降到 64 位量级 |
+| **改 `RouteConfig` 后 `mvn test-compile` 是绿的，clean 之后才暴露 jump 两处旧构造** | Maven 增量编译按源文件时间戳判断，`sl-jump` 的测试源码没动 → 整模块跳过编译，跨模块的 record 签名变更被完全掩盖 | 凡改 `sl-common` 的公共 record，收口前至少 `mvn clean test-compile` 一次（本轮已并入 `make verify` 前的固定动作）。这类"编译通过但其实没编"的坑与 §4 里"取不到值但不报错"是同一族 |
+
 ## 5. 本期决策记录
 
 - **M2-00 先做诊断再动配置**：M1-11 只证明了"不是 GC"。尾巴到底在 jump 进程内、nginx 排队、还是同机压测客户端争抢 CPU，决定治理手段完全不同；因此第一步是给链路加**可归因的观测量**（nginx 侧 `$upstream_connect_time`/`$upstream_response_time` 与 `$request_time` 分解、jump 侧 HTTP 服务端延迟分布），拿一轮数据定位，再谈调参。
@@ -109,9 +125,16 @@
 - **中间页由 jump 直接返回 200 HTML，不新增服务、不走 nginx 静态**：302 之后服务端没有 HTML 控制权，降级判断只能写在服务端给的这一页里 —— 与"5.2 禁用 301"是同一个取舍的两面。
 - **mock 购票页做 nginx 静态回显，不建 Java 模块**：它只需要回显 query/fragment 供 UA 重放断言和浏览器演示；假订单接口与归因回传是 M3 那一格。
 
+双轨落地时（M2-31）再定三件：
+
+- **数据面只读编译产物，永不回查 `route_rule`**：jump 的分片配置里没有这张表，这不是省事，而是把"缓存与库里不一致"从运行时自愈问题变成可判定的实现 bug——不一致时数据面只会用旧快照（有 TTL 与对账收口），不会时好时坏。代价是规则改动的生效路径必须唯一（`PUT → 行 + 重编译 → link_route → Redis`），任何旁路写 `route_rule` 的代码都不许长出来。
+- **`PUT /links/{code}/rules` 整体替换，不做逐条 PATCH**：规则集合是有顺序语义的整体（priority 冲突、default 唯一、条件重复检测都要看全集），逐条合并的结果没人能预测，包括写它的人。清空用空数组而不是 DELETE，少一个动词就少一类歧义。
+- **快照里"无规则"写成显式 `"rules": null`**：沿用 5.2/6.2 既有的"null 字段显式序列化、跳转侧按 key 读取"口径，不给同一个快照两种形状；数据面用 `rulesOrEmpty()` 收口，老快照（M1 写的、压根没有这个键）与新快照走同一条路径——这也是 `accept-m1-07` 不改一行就能在全新 build 上 15/15 的原因。
+
 ## 6. 下期待办与风险
 
-- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。下一项在两者之间选：**M2-01 事件链批量化**（把跳转 QPS 上限从 ~14k 抬到 ≥20k，M2-00 的归因直接指向它），或 M2 粗列表里的 **route_rule 双轨 + UA 路由引擎 + 中间页**（动态路由那一半，出口标准"UA 重放脚本全绿"）。
+- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。当时留给用户选的两项里，**M2-01 事件链批量化已收口**（见下面第四条），**动态路由主线进行中**：M2-30（口径）、M2-31（route_rule 双轨）完成于 2026-10-04，下一项是 **M2-32 UA/容器特征引擎**（`UaClassifier` + 配置化特征表 + jump 填上 ClickEvent 的 `device_type/os`，此前恒为空串）。
+- **M2-31 给 M2-33 留下的两条硬约束**：① `route_json` 的重编译入口只许一个（`RouteRuleService.validateAndCompile`），任何"顺手 new 一个 RouteConfig"的路径都必须带全字段——本轮的"PATCH 清空规则"就是这么种出来的；② 快照里 `rules` 已就位，一级决策（priority 升序首条生效）与 `xsl.jump.mode` 真开关落地时**不要**新增数据面对 `route_rule` 的读取。
 - **行为评分（DESIGN 5.3 第 3 层）留了明确的接口**：本期已把 `risk_score` 从恒 0 变成可写（超频贡献 +25），`is_bot` 仍恒 0；评分规则表落地时，只需在 `Direct302Resolver` 的频控之后插一层打分并把 `score ≥ 40 → is_bot=1 + 验证页` 判掉，事件与看板口径不用回头再改。
 - **频控的两个已知边界（不在本期解，先记账）**：① 固定 60s 窗口在边界处最坏放行约 2× 阈值 → 真滑动要做就得连 Redis Cluster 的 hash tag 一起改（DESIGN 5.3 第 2 层已写明理由）；② 阈值只有"全局 + 链接级"两层，租户级覆盖与配额（DESIGN 5.3 第 1 层"按租户可配"、6.1 三级配额）是后面的独立任务。
 - **M2-01 事件链批量化已收口（2026-10-03）**：`async_insert(wait=1)` + 5000 行/批 + producer 攒批 + 4 分区并行，chain-live 平顶 12,185 → **18,193 QPS（+49%）**、追赶 29,578 → 41,223 events/s、事件链 CPU 2.17 → 0.92 核，丢失率全程 0.0000%。**目标 ≥20k 未达成（差 9%）**，且瓶颈已换人：数据面自己（jump ≈1.4 核×2 + nginx ≈1.3 核）成了新的大头，事件链不再是限制。

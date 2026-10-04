@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -48,6 +49,15 @@ public class LinkController {
             @PathVariable String code,
             @RequestBody UpdateLinkRequest req) {
         return ApiResponse.ok(linkService.update(requireTenant(tenantId), code, req));
+    }
+
+    /** 规则整体替换（DESIGN 6.2 双轨；PUT 而非 PATCH，见 UpdateRulesRequest 的注释）。 */
+    @PutMapping("/{code}/rules")
+    public Map<String, Object> replaceRules(
+            @RequestHeader(value = "X-Tenant-Id", required = false) String tenantId,
+            @PathVariable String code,
+            @RequestBody UpdateRulesRequest req) {
+        return ApiResponse.ok(linkService.updateRules(requireTenant(tenantId), code, req.rules()));
     }
 
     private static long requireTenant(String tenantId) {

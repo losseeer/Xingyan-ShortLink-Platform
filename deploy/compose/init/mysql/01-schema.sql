@@ -67,14 +67,17 @@ CREATE TABLE IF NOT EXISTS xsl_00.route_rule (
   short_code      VARCHAR(12)  NOT NULL,
   tenant_id       BIGINT       NOT NULL COMMENT '分片键冗余，保证与 short_link 同分片',
   priority        INT          NOT NULL,
-  condition_type  VARCHAR(32)  NULL COMMENT 'ua_container/device/geo_province/time_window',
-  condition_op    VARCHAR(16)  NULL COMMENT 'eq/in/gt/between',
-  condition_value VARCHAR(128) NULL,
-  target_url      VARCHAR(2048) NOT NULL,
+  condition_type  VARCHAR(32)  NULL COMMENT 'ua_container/device/geo_province/time_window/default',
+  condition_op    VARCHAR(16)  NULL COMMENT 'eq/in/between/any（gt 被实现时收窄掉：这几类条件没有可比大小语义）',
+  condition_value VARCHAR(128) NULL COMMENT 'time_window 存 JSON 数组串 ["from","to"]',
+  target_url      VARCHAR(2048) NULL COMMENT 'h5/intermediate/wx_urllink 的落地或失败引导',
+  scheme_url      VARCHAR(512)  NULL COMMENT 'app_scheme 的 scheme://…；wx_urllink 复用此列存小程序 path',
+  fallback_url    VARCHAR(2048) NULL COMMENT 'app_scheme 降级目标（中间页 JS 2.5s 未唤起即跳这里）',
   target_type     VARCHAR(16)  NOT NULL COMMENT 'h5/app_scheme/wx_urllink/intermediate',
   create_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  UNIQUE KEY uk_code_priority (short_code, priority),
   KEY idx_code_priority (short_code, priority)
 ) ENGINE=InnoDB;
 
@@ -170,4 +173,28 @@ SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = 'xsl_01' AND TABLE_NAME = 'link_route'
                   AND COLUMN_NAME = 'access_used') = 0,
   'ALTER TABLE xsl_01.link_route ADD COLUMN access_used INT NOT NULL DEFAULT 0 AFTER version, ADD COLUMN access_used_at DATETIME NULL AFTER access_used', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- M2-31 规则双轨：app_scheme 需要 scheme + 降级目标两列，且 target_url 对 app_scheme 规则可为空
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = 'xsl_00' AND TABLE_NAME = 'route_rule'
+                  AND COLUMN_NAME = 'scheme_url') = 0,
+  'ALTER TABLE xsl_00.route_rule ADD COLUMN scheme_url VARCHAR(512) NULL AFTER target_url, ADD COLUMN fallback_url VARCHAR(2048) NULL AFTER scheme_url, MODIFY COLUMN target_url VARCHAR(2048) NULL', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = 'xsl_01' AND TABLE_NAME = 'route_rule'
+                  AND COLUMN_NAME = 'scheme_url') = 0,
+  'ALTER TABLE xsl_01.route_rule ADD COLUMN scheme_url VARCHAR(512) NULL AFTER target_url, ADD COLUMN fallback_url VARCHAR(2048) NULL AFTER scheme_url, MODIFY COLUMN target_url VARCHAR(2048) NULL', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+-- priority 唯一性下沉到库（校验器已挡一层，这层防的是"两个请求同时改同一码"）；route_rule 此前零引用，加索引无历史冲突
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = 'xsl_00' AND TABLE_NAME = 'route_rule' AND INDEX_NAME = 'uk_code_priority') = 0,
+  'ALTER TABLE xsl_00.route_rule ADD UNIQUE KEY uk_code_priority (short_code, priority)', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @sql := IF((SELECT COUNT(*) FROM information_schema.STATISTICS
+                WHERE TABLE_SCHEMA = 'xsl_01' AND TABLE_NAME = 'route_rule' AND INDEX_NAME = 'uk_code_priority') = 0,
+  'ALTER TABLE xsl_01.route_rule ADD UNIQUE KEY uk_code_priority (short_code, priority)', 'DO 0');
 PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;

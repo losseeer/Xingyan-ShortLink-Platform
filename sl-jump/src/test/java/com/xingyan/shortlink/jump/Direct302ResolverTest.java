@@ -72,7 +72,7 @@ class Direct302ResolverTest {
 
     private RouteConfig rc(Integer status, LocalDateTime expire, Integer limit, Integer rateLimit) {
         return new RouteConfig("https://mock.ticketsales.test/show/1", 1001, 1,
-                expire, limit, status == null ? 0 : status, 1, "ch-9", "cm-9", null, rateLimit);
+                expire, limit, status == null ? 0 : status, 1, "ch-9", "cm-9", null, rateLimit, null);
     }
 
     @Test
@@ -89,7 +89,7 @@ class Direct302ResolverTest {
     void utmPassthroughAndNoOverride() {
         when(routes.find("utm0001")).thenReturn(Optional.of(new RouteConfig(
                 "https://mock.ticketsales.test/show/1?utm_source=orig", 1001, 1,
-                null, null, 0, 1, null, null, null, null)));
+                null, null, 0, 1, null, null, null, null, null)));
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addParameter("utm_source", "injected");
         req.addParameter("utm_medium", "sms");

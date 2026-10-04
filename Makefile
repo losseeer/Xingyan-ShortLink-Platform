@@ -50,8 +50,10 @@ db-init:
 seed:
 	$(REDIS_EXEC) HSET sl:tenant:api xy-key-alice-001 1001 xy-key-bob-002 1002 xy-key-carol-003 1003
 
+# clean 不是保守，是纪律：Maven 增量按源文件时间戳决定编不编，改了 sl-common 的公共 record 之后，
+# 没被碰过的模块（sl-jump 的测试源码）整模块跳过编译，签名不匹配要拖到下一次 clean 构建才暴露（ITER-M2 §4）。
 verify:
-	$(MVN) verify
+	$(MVN) clean verify
 
 # 应用镜像 = 宿主 mvn 产物 + JRE（M1-10）。compose 里四个服务只引用 tag，不做镜像构建，
 # 所以 `up` 之前要先 `make images`（首次或改代码后）。

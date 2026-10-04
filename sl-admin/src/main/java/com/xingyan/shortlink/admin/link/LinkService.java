@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xingyan.shortlink.admin.pool.ShortCodePoolService;
 import com.xingyan.shortlink.common.route.RouteConfig;
+import com.xingyan.shortlink.common.route.RouteRule;
 import com.xingyan.shortlink.common.admission.UrlAdmissionChecker;
 import com.xingyan.shortlink.common.error.ErrorCode;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
@@ -51,6 +52,7 @@ public class LinkService {
     private final LinkTxWriter txWriter;
     private final ObjectMapper mapper;
     private final String baseDomain;
+    private final RouteRuleService ruleService;
     private final SecureRandom random = new SecureRandom();
 
     public LinkService(StringRedisTemplate redis,
@@ -60,6 +62,7 @@ public class LinkService {
                        SnowflakeIdGenerator idGenerator,
                        LinkTxWriter txWriter,
                        ObjectMapper mapper,
+                       RouteRuleService ruleService,
                        @Value("${xsl.link.base-domain:xy1.test}") String baseDomain) {
         this.redis = redis;
         this.jdbc = jdbc;
@@ -68,6 +71,7 @@ public class LinkService {
         this.idGenerator = idGenerator;
         this.txWriter = txWriter;
         this.mapper = mapper;
+        this.ruleService = ruleService;
         this.baseDomain = baseDomain;
     }
 
@@ -95,15 +99,19 @@ public class LinkService {
                     "expire_time must be in the future");
         }
 
+        // 规则先校验+编译：非法即 400 且<b>不占码</b>（在 allocateCode 之前，否则会留下 Redis  CLAIM 与池码），
+        // 编译出的有序列表同时进 route_json（数据面读取源）与 route_rule 行（行式真源）
+        List<RouteRule> compiledRules = ruleService.validateAndCompile(req.rules());
         String code = allocateCode(req.shortCode());
         long id = idGenerator.nextId();
         RouteConfig snapshot = new RouteConfig(req.originUrl(), tenantId, redirectType,
                 req.expireTime(), req.accessLimit(), 0, 1,
-                req.channelId(), req.campaignId(), req.promoterId(), req.rateLimitPerMinute());
+                req.channelId(), req.campaignId(), req.promoterId(), req.rateLimitPerMinute(),
+                compiledRules.isEmpty() ? null : compiledRules);
         String routeJson = writeJson(snapshot);
 
         try {
-            txWriter.createCommitted(id, code, req, tenantId, routeJson);
+            txWriter.createCommitted(id, code, req, tenantId, routeJson, compiledRules);
         } catch (RuntimeException e) {
             releaseCodeClaim(code);
             throw e;
@@ -130,6 +138,7 @@ public class LinkService {
         data.put("expire_time", req.expireTime());
         data.put("access_limit", req.accessLimit());
         data.put("rate_limit_per_minute", req.rateLimitPerMinute());
+        data.put("rules", compiledRules);
         data.put("status", 0);
         return data;
     }
@@ -142,6 +151,7 @@ public class LinkService {
                         + "FROM short_link WHERE tenant_id = ? AND short_code = ?", tenantId, code));
         row.put("id", String.valueOf(row.get("id")));
         row.put("short_url", shortUrl(code));
+        row.put("rules", ruleService.load(tenantId, code));
         return row;
     }
 
@@ -171,10 +181,13 @@ public class LinkService {
         int status = req.status() != null ? req.status() : ((Number) current.get("status")).intValue();
 
         long version = nextRouteVersion(code);
+        // PATCH 只改元数据时，已存在的规则必须原样带进新快照：route_json 是数据面唯一读取源，
+        // 编译时漏掉 rules 就等于"改了个过期时间，规则被静默清空"。
+        List<RouteRule> existing = ruleService.load(tenantId, code);
         RouteConfig snapshot = new RouteConfig((String) current.get("origin_url"), tenantId,
                 ((Number) current.get("redirect_type")).intValue(), expireTime, accessLimit, status, version,
                 (String) current.get("channel_id"), (String) current.get("campaign_id"),
-                (String) current.get("promoter_id"), rateLimit);
+                (String) current.get("promoter_id"), rateLimit, existing.isEmpty() ? null : existing);
         String routeJson = writeJson(snapshot);
 
         txWriter.updateCommitted(tenantId, code, expireTime, accessLimit, status, rateLimit, routeJson);
@@ -188,6 +201,40 @@ public class LinkService {
         data.put("access_limit", accessLimit);
         data.put("rate_limit_per_minute", rateLimit);
         data.put("status", status);
+        data.put("route_version", version);
+        return data;
+    }
+
+    /**
+     * PUT /links/{code}/rules：整体替换规则并重新编译快照（DESIGN 6.2 双轨）。
+     * 行式真源与编译产物在同一事务里改，缓存与 {@code link_route} 随后同步——
+     * 与 PATCH 元数据走的是同一条发布路径（version 递增、Pub/Sub 由 M3 补）。
+     */
+    public Map<String, Object> updateRules(long tenantId, String code, List<RouteRule> incoming) {
+        requireOwnership(tenantId, code);
+        List<RouteRule> compiled = ruleService.validateAndCompile(incoming);
+        Map<String, Object> current = jdbc.queryForMap(
+                "SELECT origin_url, redirect_type, expire_time, access_limit, rate_limit_per_minute, status, "
+                        + "channel_id, campaign_id, promoter_id "
+                        + "FROM short_link WHERE tenant_id = ? AND short_code = ?", tenantId, code);
+        long version = nextRouteVersion(code);
+        RouteConfig snapshot = new RouteConfig((String) current.get("origin_url"), tenantId,
+                ((Number) current.get("redirect_type")).intValue(),
+                toLocalDateTime(current.get("expire_time")), toInteger(current.get("access_limit")),
+                ((Number) current.get("status")).intValue(), version,
+                (String) current.get("channel_id"), (String) current.get("campaign_id"),
+                (String) current.get("promoter_id"), toInteger(current.get("rate_limit_per_minute")),
+                compiled.isEmpty() ? null : compiled);
+        String routeJson = writeJson(snapshot);
+
+        txWriter.rulesReplaced(tenantId, code, compiled, routeJson);
+        jdbc.update("UPDATE link_route SET route_json = CAST(? AS JSON), version = ? WHERE short_code = ?",
+                routeJson, version, code);
+        cacheRoute(code, routeJson);
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("short_code", code);
+        data.put("rules", compiled);
         data.put("route_version", version);
         return data;
     }

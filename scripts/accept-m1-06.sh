@@ -111,7 +111,7 @@ check "idempotent-same-code" "$CODE1" "$CODE2"
 RULES='{"rules":[
   {"priority":20,"condition_type":"device","condition_op":"eq","condition_value":"ios",
    "target_type":"h5","target_url":"https://mock.ticketsales.test/ios"},
-  {"priority":5,"condition_type":"ua_container","condition_op":"eq","condition_value":"micromessenger",
+  {"priority":5,"condition_type":"ua_container","condition_op":"eq","condition_value":"wechat",
    "target_type":"app_scheme","target_url":null,"scheme_url":"xyapp://open/order",
    "fallback_url":"https://mock.ticketsales.test/dl"}]}'
 

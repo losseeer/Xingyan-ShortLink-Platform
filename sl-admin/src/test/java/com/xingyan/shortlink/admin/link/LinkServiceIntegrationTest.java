@@ -338,7 +338,7 @@ class LinkServiceIntegrationTest {
         // 故意乱序提交：编译产物必须按 priority 升序，数据面靠"第一个匹配"决策，顺序就是语义
         List<RouteRule> incoming = List.of(
                 h5(20, RouteRule.DEVICE, "in", "ios,android", "https://mock.ticketsales.test/app-h5"),
-                h5(5, RouteRule.UA_CONTAINER, "eq", "micromessenger", "https://mock.ticketsales.test/wx"),
+                h5(5, RouteRule.UA_CONTAINER, "eq", "wechat", "https://mock.ticketsales.test/wx"),
                 h5(10, RouteRule.GEO_PROVINCE, "eq", "上海", "https://mock.ticketsales.test/sh"));
         Map<String, Object> data = createAndTrack(TENANT_A,
                 new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "ruleord01", null, null, null, null, incoming));
@@ -348,7 +348,7 @@ class LinkServiceIntegrationTest {
         var dbRules = readJson(jdbc.queryForObject(
                 "SELECT route_json FROM link_route WHERE short_code = ?", String.class, "ruleord01")).path("rules");
         assertEquals(List.of(5, 10, 20), jsonPriorities(dbRules), "route_json.rules 是编译产物，必须已排序");
-        assertEquals("micromessenger", dbRules.get(0).path("condition_value").asText());
+        assertEquals("wechat", dbRules.get(0).path("condition_value").asText());
         assertTrue(dbRules.get(0).has("condition_type"), "快照里的键是 snake_case（jump 用同一份命名策略反序列化）");
 
         var cachedRules = readJson(redis.opsForValue().get("sl:r:ruleord01")).path("rules");
@@ -366,7 +366,7 @@ class LinkServiceIntegrationTest {
         // 这两类走的是 DDL 新加的列，不落行就等于"M2-33 的中间页拿不到降级目标"
         createAndTrack(TENANT_A, new CreateLinkRequest(OK_URL, "ch-wechat", "cp-autumn", "p-9", "ruletype1",
                 null, null, null, null, List.of(
-                new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "micromessenger", RouteRule.T_WX_URLLINK,
+                new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "wechat", RouteRule.T_WX_URLLINK,
                         "https://mock.ticketsales.test/mp-fallback", "/pages/order/detail?id=9", null),
                 new RouteRule(2, RouteRule.DEVICE, "eq", "ios", RouteRule.T_APP_SCHEME,
                         null, "xyapp://open/order?id=9", "https://mock.ticketsales.test/dl-guide"))));

@@ -27,6 +27,7 @@
 | 动态路由主线（route_rule 双轨 + UA 引擎 + 中间页） | ✅ M2 计划内 | **进行中**（2026-10-03 开工，细化为 M2-30…M2-36） | 细表在 [DEVELOPMENT_PLAN](../DEVELOPMENT_PLAN.md)「二-B」。摸底先把三处"文档说做了、代码里没有"记进 §4：`xsl.jump.mode` 只是注释、`route_rule` Java 零引用、outbox 只有写方没有同步方 |
 | M2-30 口径先于代码（六条实现口径 + 任务表） | ✅ 计划内（细化时新增） | ✅ 完成（2026-10-03，`e583728`） | DESIGN 6.2 增"实现口径"六条（特征表自维护、未知不匹配、真开关、`wx_urllink` 走 mock provider、中间页由 jump 返 HTML、mock 购票页 nginx 静态）；DEVELOPMENT_PLAN 新增「二-B」任务表 |
 | M2-31 route_rule 双轨：校验器 + 编译器 + 规则 API | ✅ 计划内 | ✅ 完成（2026-10-04） | `sl-common` 加 `RouteRule/UaContainer/UaDevice`，`RouteConfig` 加 `rules`；`sl-admin` 加 `RouteRuleService`（校验 + 按 priority 编译）与 `PUT /links/{code}/rules`，规则与 `short_link` 同事务写 `route_rule`；DDL 补 `scheme_url/fallback_url`、`target_url` 改可空、`uk_code_priority`。jump 仍只读 `link_route`（气分离）。验证见 §3「M2-31 双轨」行 |
+| M2-32 UA/容器特征引擎 | ✅ 计划内 | ✅ 完成（2026-10-04） | `sl-common` 加 `UaFeature/UaClassifier`（容器与设备两次独立判定、首个子串命中即定类、配错的表在构造期抛异常）；特征表落在 `sl-jump/application.yml` 的 `xsl.jump.ua`（代码里不留默认表）；jump 把分类结果写进 `ClickEvent.device_type/os`（此前恒为空串）。**顺带把 M2-31 用的容器 key 从 `micromessenger` 改成 `wechat`**，让规则条件、事件取值、CH MV 字面量三处共用一套词汇表（§4）。验证见 §3 两行 |
 
 ## 3. 实测数字与凭证
 
@@ -48,6 +49,8 @@
 | 配置变更后的旧验收复跑 | 动了 nginx/jump/compose 三处配置，不得回归既有链路 | ✅ **0 回归**（2026-10-03 14:38，同一台机器、改后重启的栈上）：`accept-m1-07.sh` **15/15**（302/404/403/410 语义 + 冷码回源二查命中缓存 db 计数 2.0→2.0）、`accept-m1-10.sh` **19/19**（三域同一 Location、双实例承载 32/32、滚动重启窗口 5,632 击全 302／**0×5xx**、管理面宕机不影响跳转、未登记 Host 444） | 脚本输出即凭证；改动面＝`nginx.conf` 的 `log_format`（新增 `rt/uct/urt`）、`sl-jump/application.yml`（开启 HTTP 分位数）、compose 的 jump `mem_limit` |
 
 | M2-31 双轨落地的验证（本轮无性能数字，凭证是行为断言） | 规则要"存得下、编得出、清不掉" | `LinkServiceIntegrationTest` **15 测全绿**（本期新增 6 条：三规则乱序→有序、PUT 后 version+1 且元数据不变、PATCH 元数据不清空 rules、13 种非法规则逐个 400、跨租户 PUT→403 且零写痕、`app_scheme/wx_urllink` 的 `scheme_url/fallback_url` 双列往返）。`accept-m1-06` 从 21 项扩到 **33 项**（新增第 8 段：HTTP 上 `rules[]` 的 snake_case 绑定、响应/`route_json`/Redis 三处同源同序、`route_rule` 行数、非法规则不占码、空数组清空）；旧验收在**含 rules 的新 build** 上全绿：`make verify` 全仓 **90 测 / 0 失败**，`accept-m1-07` **15/15**、`accept-m1-09` **14/14**、`accept-m1-10` **19/19**、`accept-m2-13` **17/17**（`route_json` 多了 `rules` 键 ⇒ 按回归纪律把 jump 侧链路全部重跑） | 脚本输出即凭证；契约变更清单＝`route_json` 增 `rules`（无规则时为显式 `null`）+ 新增 `PUT /links/{code}/rules` + `POST /links` 受理 `rules[]` + `route_rule` 表首次被 Java 侧读写 |
+| M2-32 UA 重放落库（`accept-m2-32.sh`） | ≥12 条真实 UA；CH 里 `device_type/os` 不再为空 | ✅ **19/19**：13 条真实 UA（微信 iPhone/安卓/Windows PC、抖音 iPhone/安卓、手机 QQ、QQ 浏览器、微博双端、支付宝、裸 Safari/Chrome、curl）经 nginx 全 302，事件链落库后**每个 `(device_type, os)` 对恰 1 行**；`device_type='' OR os=''` 的行 **0 个**；真·空 UA（`curl -H 'User-Agent;'`）落 `unknown/unknown` 而不是空串；聚合层 `sum(wx_pv, douyin_pv, browser_pv, pv)` = **3 / 2 / 9 / 14**，证明"规则条件值 = 事件取值 = MV 字面量"这套词汇表真的贯通到看板取数那一层 | `scripts/accept-m2-32.sh` 输出即凭证（fixture 与事件按 code 清理）；单测侧 `make verify` 全仓 **101 测 / 0 失败**（新增 `UaClassifierTest` 7 条语义与"配错即炸"、`UaFeatureTableTest` 3 条**跑 shipped 的 `application.yml`**、`Direct302ResolverTest` 1 条事件字段断言） |
+| M2-32 之后跳转在目标负载不退化 | P99<50ms @ ≥2000 QPS 维持 | 同日同档两次 c=4/40s：**5,932 QPS／p99 17.42ms** 与 **5,194 QPS／p99 6.16ms**，jump 自测均值 **0.245ms（237,451 次）**／**0.288ms（207,805 次）** ⇒ 达标判定成立。但**两次 p99 差 2.8 倍，按 §4 的规则 p99 只作佐证、不作结论**；与昨日（2026-10-03 复采）0.193/0.215ms 的均值差 **不能归因给分类器**——跨天绝对值不可比，且今天两次跑的非 302=0、runnable/waiting 线程 36/30 vs 昨日 22/10 说明环境本身就不同。要判"分类器加了多少开销"得在同一天做 A/B（回退开关本身就能当对照组，M2-33 之后有真开关时再做） | `bench/reports/2026-10-04-1058-m2-00-jump-loadcurve.md`、`-1059-m2-00-jump-loadcurve.md`（头部含宿主负载 loadavg 7.52／内存 142M unused、容器内存与 CH 合并数） |
 
 > 口径纪律：仅此处出现且可点达的实测值可进入简历/分享；目标值不得冒充实测。
 
@@ -96,6 +99,17 @@ M2-31 实现期间的口径收窄与自查（2026-10-04），性质分两类：*
 | `route_rule.id` 第一版用 `(tenant, code.hashCode(), priority)` 拼算术 | `String.hashCode()` 只有 32 位，两个不同短码撞哈希的概率在几十万级就不可忽略；一旦撞上有主键冲突，表现是 500 而原因藏在哈希里，查起来毫无线索 | 换 FNV-1a 64 位哈希并清符号位；仍保持**确定性**（同 `(tenant, code, priority)` 重编译得到同一主键，"整体替换"重试不会留下两套行），只是把冲突概率从 32 位量级降到 64 位量级 |
 | **改 `RouteConfig` 后 `mvn test-compile` 是绿的，clean 之后才暴露 jump 两处旧构造** | Maven 增量编译按源文件时间戳判断，`sl-jump` 的测试源码没动 → 整模块跳过编译，跨模块的 record 签名变更被完全掩盖 | 凡改 `sl-common` 的公共 record，收口前至少 `mvn clean test-compile` 一次（本轮已并入 `make verify` 前的固定动作）。这类"编译通过但其实没编"的坑与 §4 里"取不到值但不报错"是同一族 |
 
+M2-32 的词汇表与特征表（2026-10-04），一处是我 M2-31 自己埋的雷：
+
+| 偏差点 | 原因 | 处理 |
+|---|---|---|
+| **容器 key 用了 UA 串 `micromessenger`，而 CH 的 MV 字面量是 `'wechat'`/`'douyin'`** | M2-31 定 `UaContainer` 时我按"UA 里长什么样"取的名，没去查统计侧已经在用什么串。照这个 key 写事件，`countIf(device_type='wechat') AS wx_pv` 会**静默恒为 0**——不报错、不失败，只是看板上的微信渠道没数 | 全链路改成业务名词汇表：`wechat/douyin/qq/weibo/alipay/unknown`（枚举、DESIGN 6.2 示例、集成用例、`accept-m1-06` 第 8 段同步），UA 串降级成 `tokens`（会变的事实，不是标识）。并补 `accept-m2-32.sh` 的 C 段把"规则条件值＝事件取值＝MV 字面量"这条贯通断言化 |
+| `click_event.device_type` 装的是**容器**、`os` 装的是**设备大类**，列名与语义不完全对得上 | M1 建表时 `device_type` 就是按"分容器 PV"用的（`click_stat_minute` 注释、M1-11 存档 seed 都按 `'wechat'/'douyin'/'browser'` 在跑） | **不改列名**：改名要动 CH 迁移，且历史行的分类会全部失效，让存档失去可比性（这是本项目更看重的那条纪律）。把取值词汇表写进 DESIGN 4.2 并在此留痕，避免下一个人以为 `device_type` 是 mobile/pc |
+| **"特征表从配置加载"这句话有边界，不说清就会变成假承诺** | 类别（wechat/douyin/…）同时被三处引用：`route_rule` 条件校验、事件取值、CH 字面量。把它配置化＝让这三处各配一份，然后互相错开。真正需要月度更新的其实是**特征串**（某容器改了 UA 标识） | 拆成两层并写进 6.2：`tokens` 配置级（改 `application.yml`）、类别代码级（动枚举）。同时**代码里不留默认表**——留了就会出现"改了配置没生效，因为跑的是代码里那份"，而这句话在启动日志里看不出来 |
+| 表写错（key 不在枚举、token 为空、同 key 出现两次、整表为空）如果只打日志，症状是"某条路由规则永远不命中" | 这类故障要等到看板上"微信流量为 0"才被发现，而那时已经分不清是配置、UA 还是路由的问题 | 全部在 `UaClassifier` 构造期抛 `IllegalArgumentException` ⇒ jump 起不来（配置是系统边界，值得付这一次启动失败）。`UaClassifierTest` 把五种错法各钉一条断言 |
+| **自维护表的覆盖代价第一次被量化**：鸿蒙 NEXT 的 UA（`Phone; OpenHarmony 5.0 … ArkWeb`）既不是 android 也不是 iphone/windows | 表里只有 5 容器 + 3 设备，通用库能识别的类别我们只覆盖了一半 | 如实钉成断言（`UaFeatureTableTest` 的 `OPENHARMONY_MOBILE → unknown/unknown`），并写进 DESIGN 6.2 的"代价"那句。行为后果是可接受的：规则侧未识别走 default，不会误伤 |
+| `accept-m2-32.sh` 的样本集要求**每个 `(容器, 设备)` 对唯一**，否则"逐条 count==1"不成立 | curl（`curl/8.4.0`）与真·空 UA 都判 `unknown/unknown`，同一对出现两次就没法用 count==1 断言分类正确 | 空 UA 那条改用 `user_agent=''` 定位（顺带把"M1 历史行的空串"与"本轮的 unknown"区分开），13 条常规样本两两不重对。这个约束写进脚本头注释，M2-35 扩样本时要保持 |
+
 ## 5. 本期决策记录
 
 - **M2-00 先做诊断再动配置**：M1-11 只证明了"不是 GC"。尾巴到底在 jump 进程内、nginx 排队、还是同机压测客户端争抢 CPU，决定治理手段完全不同；因此第一步是给链路加**可归因的观测量**（nginx 侧 `$upstream_connect_time`/`$upstream_response_time` 与 `$request_time` 分解、jump 侧 HTTP 服务端延迟分布），拿一轮数据定位，再谈调参。
@@ -131,9 +145,16 @@ M2-31 实现期间的口径收窄与自查（2026-10-04），性质分两类：*
 - **`PUT /links/{code}/rules` 整体替换，不做逐条 PATCH**：规则集合是有顺序语义的整体（priority 冲突、default 唯一、条件重复检测都要看全集），逐条合并的结果没人能预测，包括写它的人。清空用空数组而不是 DELETE，少一个动词就少一类歧义。
 - **快照里"无规则"写成显式 `"rules": null`**：沿用 5.2/6.2 既有的"null 字段显式序列化、跳转侧按 key 读取"口径，不给同一个快照两种形状；数据面用 `rulesOrEmpty()` 收口，老快照（M1 写的、压根没有这个键）与新快照走同一条路径——这也是 `accept-m1-07` 不改一行就能在全新 build 上 15/15 的原因。
 
+UA 引擎落地时（M2-32）另外定三件：
+
+- **一套词汇表贯通三处，而不是三处各留一套**：`route_rule` 的容器条件值、`click_event.device_type`、`click_stat_minute_mv` 的 `countIf(...)` 字面量必须是同一个字符串。为此我改掉了 M2-31 刚定的 `micromessenger`——代价是两个文件的小改动，收益是"规则命中微信"与"统计里的微信 PV"从此不可能各说各话。UA 里长什么样（`MicroMessenger/8.0`）是**会变的事实**，把它当标识就是把事实当命名。
+- **分类只在事件构造处做一次**（`buildEvent` 里 `classify()` 一次给出容器 + 设备），M2-33 的规则匹配复用同一个 `Profile`，不在跳转路径上扫第二遍 UA。跳转路径现在是被测出的新瓶颈，任何"顺手在两个地方各算一次"的写法都会直接打在 CPU 上。
+- **`unknown`、空 UA、空串是三件事**：认不出＝`unknown`（列写了但没匹配上）；没带 UA 靠 `user_agent=''` 查出来；而 `device_type=''` 从此只代表"M1 写过的那批历史行"。看板对这三者的处理不同（前两种是流量，最后一种是数据质量），所以不能都塌成空串——`accept-m2-32.sh` 的 B 段就是钉这个的。
+
 ## 6. 下期待办与风险
 
-- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。当时留给用户选的两项里，**M2-01 事件链批量化已收口**（见下面第四条），**动态路由主线进行中**：M2-30（口径）、M2-31（route_rule 双轨）完成于 2026-10-04，下一项是 **M2-32 UA/容器特征引擎**（`UaClassifier` + 配置化特征表 + jump 填上 ClickEvent 的 `device_type/os`，此前恒为空串）。
+- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。当时留给用户选的两项里，**M2-01 事件链批量化已收口**（见下面第四条），**动态路由主线进行中**：M2-30（口径）、M2-31（route_rule 双轨）、M2-32（UA/容器特征引擎）完成于 2026-10-04，下一项是 **M2-33 一级决策 + 中间页 + `xsl.jump.mode` 真开关**（`DynamicRouteResolver` 按 priority 取首条命中、四类 target、jump 返 200 HTML、`UrlLinkProvider` mock）。
+- **M2-33 开工前要知道的四件事**：① 规则匹配复用 `UaClassifier.Profile`（一次分类，别在决策与事件两处各扫一遍 UA）；② 任何重建 `RouteConfig` 的路径必须带全字段——M2-31 的"PATCH 清空规则"就是这类坑，M2-33 若新增快照写入点要一并复核；③ `mode` 开关做成真装配之后，**同一天用开关当对照组**测一次 c=4 开销（本轮 §3 的 0.245/0.288ms 与昨日不可比，就是缺一个同天对照）；④ `JumpDecision` 现在只有状态码 + Location 形态，中间页要给它加"200 + HTML body"这一支，别用 `HttpStatus` 硬凑。
 - **M2-31 给 M2-33 留下的两条硬约束**：① `route_json` 的重编译入口只许一个（`RouteRuleService.validateAndCompile`），任何"顺手 new 一个 RouteConfig"的路径都必须带全字段——本轮的"PATCH 清空规则"就是这么种出来的；② 快照里 `rules` 已就位，一级决策（priority 升序首条生效）与 `xsl.jump.mode` 真开关落地时**不要**新增数据面对 `route_rule` 的读取。
 - **行为评分（DESIGN 5.3 第 3 层）留了明确的接口**：本期已把 `risk_score` 从恒 0 变成可写（超频贡献 +25），`is_bot` 仍恒 0；评分规则表落地时，只需在 `Direct302Resolver` 的频控之后插一层打分并把 `score ≥ 40 → is_bot=1 + 验证页` 判掉，事件与看板口径不用回头再改。
 - **频控的两个已知边界（不在本期解，先记账）**：① 固定 60s 窗口在边界处最坏放行约 2× 阈值 → 真滑动要做就得连 Redis Cluster 的 hash tag 一起改（DESIGN 5.3 第 2 层已写明理由）；② 阈值只有"全局 + 链接级"两层，租户级覆盖与配额（DESIGN 5.3 第 1 层"按租户可配"、6.1 三级配额）是后面的独立任务。

@@ -52,6 +52,30 @@ xsl:
       enabled: ${XSL_JUMP_RL_ENABLED:true}
       window-seconds: ${XSL_JUMP_RL_WINDOW:60}
       permits-per-window: ${XSL_JUMP_RL_PERMITS:60}
+    # UA 特征表（M2-32，DESIGN 6.2）：按声明顺序取首个子串命中，全不中 → unknown。
+    # key 是词汇表值（同时是 route 条件值与 click_event.device_type/os），必须落在枚举里，
+    # 配错会在启动时抛异常；tokens 才是 UA 里的实际串（"月度更新"在单机的等价物就是改这里）。
+    # 顺序是语义：wechat 要先于 qq（微信 UA 里也可能带 QQ 系串），ios/android 要先于 desktop
+    #（Android UA 含 "linux"、iPad UA 含 "like mac os x"）。
+    ua:
+      containers:
+        - key: wechat
+          tokens: [micromessenger]
+        - key: douyin
+          tokens: [douyin, aweme]
+        - key: qq
+          tokens: ['qq/', mqqbrowser, qqbrowser]
+        - key: weibo
+          tokens: ['__weibo', weibo]
+        - key: alipay
+          tokens: [alipayclient]
+      devices:
+        - key: ios
+          tokens: [iphone, ipad, ipod]
+        - key: android
+          tokens: [android]
+        - key: desktop
+          tokens: [windows nt, macintosh, x11, linux]
 
 management:
   endpoints:

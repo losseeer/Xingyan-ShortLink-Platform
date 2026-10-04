@@ -6,7 +6,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-/** 设备大类（DESIGN 6.2「device」维度，同时用于 ClickEvent 的 device_type）。 */
+/**
+ * 设备大类（DESIGN 6.2「device」维度）。
+ *
+ * <p>{@link #key()} 同时是 {@code click_event.os} 的取值与 {@code route_rule} 里 {@code device} 条件的值
+ * （词汇表约束同 {@link UaContainer}）。注意 CH 侧的容器维度落在 {@code device_type} 列、
+ * 设备维度落在 {@code os} 列——列名与语义的这层错位是 M1 建表时定下的，DESIGN 4.2 已注明。
+ */
 public enum UaDevice {
 
     IOS("ios"),

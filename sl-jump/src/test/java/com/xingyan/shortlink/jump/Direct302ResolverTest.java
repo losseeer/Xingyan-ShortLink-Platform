@@ -3,6 +3,8 @@ package com.xingyan.shortlink.jump;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
 import com.xingyan.shortlink.common.route.RouteConfig;
+import com.xingyan.shortlink.common.route.UaClassifier;
+import com.xingyan.shortlink.common.route.UaFeature;
 import com.xingyan.shortlink.jump.event.ClickEventProducer;
 import com.xingyan.shortlink.jump.event.WalQueue;
 import com.xingyan.shortlink.jump.risk.RateLimiter;
@@ -16,6 +18,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -52,8 +55,13 @@ class Direct302ResolverTest {
                 .setPropertyNamingStrategy(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE);
         ClickEventProducer producer = new ClickEventProducer(kafka, wal, mapper,
                 new SimpleMeterRegistry(), "shortlink-click");
+        // 分类器用的是最小表：本文件只验证"分类结果进了事件"，特征表本身由 UaFeatureTableTest 对着
+        // shipped 的 application.yml 验（真实 UA 样本重放）
+        UaClassifier uaClassifier = new UaClassifier(
+                List.of(new UaFeature("wechat", List.of("micromessenger"))),
+                List.of(new UaFeature("ios", List.of("iphone"))));
         resolver = new Direct302Resolver(routes, counter, rateLimiter, producer, new SnowflakeIdGenerator(),
-                mapper, new SimpleMeterRegistry(), "test-salt");
+                mapper, new SimpleMeterRegistry(), uaClassifier, "test-salt");
     }
 
     private void allowAll(int limit) {
@@ -164,5 +172,29 @@ class Direct302ResolverTest {
         resolver.resolve("rl00003", null);
         verify(rateLimiter).check(org.mockito.ArgumentMatchers.eq("rl00003"), any(),
                 org.mockito.ArgumentMatchers.eq(5000));
+    }
+
+    /**
+     * M2-32：UA 分类要落进事件的 {@code device_type/os}（CH 的容器漏斗与 M2-35 的取数依据）。
+     * 未识别给 {@code unknown} 而不是空串——统计侧需要分得开"没带 UA"与"带了但认不出"。
+     */
+    @Test
+    void clickEventCarriesUaClassification() {
+        when(routes.find("ua00001")).thenReturn(Optional.of(rc(0, null, null)));
+        MockHttpServletRequest wechatIphone = new MockHttpServletRequest();
+        wechatIphone.addHeader("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) MicroMessenger/8.0.40");
+        resolver.resolve("ua00001", wechatIphone);
+
+        when(routes.find("ua00002")).thenReturn(Optional.of(rc(0, null, null)));
+        resolver.resolve("ua00002", null);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(kafka, times(2)).send(captor.capture());
+        String identified = String.valueOf(captor.getAllValues().get(0).value());
+        assertTrue(identified.contains("\"device_type\":\"wechat\""), identified);
+        assertTrue(identified.contains("\"os\":\"ios\""), identified);
+        String noUa = String.valueOf(captor.getAllValues().get(1).value());
+        assertTrue(noUa.contains("\"device_type\":\"unknown\""), noUa);
+        assertTrue(noUa.contains("\"os\":\"unknown\""), noUa);
     }
 }

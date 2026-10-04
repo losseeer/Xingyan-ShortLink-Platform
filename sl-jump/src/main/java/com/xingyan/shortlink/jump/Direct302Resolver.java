@@ -5,6 +5,7 @@ import com.xingyan.shortlink.common.attribution.AttributionParamMerger;
 import com.xingyan.shortlink.common.event.ClickEvent;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
 import com.xingyan.shortlink.common.route.RouteConfig;
+import com.xingyan.shortlink.common.route.UaClassifier;
 import com.xingyan.shortlink.jump.event.ClickEventProducer;
 import com.xingyan.shortlink.jump.risk.ClientIdentity;
 import com.xingyan.shortlink.jump.risk.RateLimiter;
@@ -45,6 +46,7 @@ public class Direct302Resolver implements JumpResolver {
     private final ObjectMapper mapper;
     private final String ipSalt;
     private final MeterRegistry registry;
+    private final UaClassifier uaClassifier;
 
     public Direct302Resolver(RouteRepository routes,
                              AccessCounter accessCounter,
@@ -53,6 +55,7 @@ public class Direct302Resolver implements JumpResolver {
                              SnowflakeIdGenerator idGenerator,
                              ObjectMapper mapper,
                              MeterRegistry registry,
+                             UaClassifier uaClassifier,
                              @Value("${xsl.jump.ip-salt:local-dev-salt}") String ipSalt) {
         this.routes = routes;
         this.accessCounter = accessCounter;
@@ -61,6 +64,7 @@ public class Direct302Resolver implements JumpResolver {
         this.idGenerator = idGenerator;
         this.mapper = mapper;
         this.registry = registry;
+        this.uaClassifier = uaClassifier;
         this.ipSalt = ipSalt;
     }
 
@@ -124,10 +128,15 @@ public class Direct302Resolver implements JumpResolver {
         ev.setShortCode(code);
         ev.setClickTime(System.currentTimeMillis() / 1000);
         ev.setIpHash(ipHash);
-        ev.setUserAgent(request == null ? "" : header(request, "User-Agent"));
+        String userAgent = request == null ? "" : header(request, "User-Agent");
+        ev.setUserAgent(userAgent);
         ev.setReferer(request == null ? "" : header(request, "Referer"));
-        ev.setDeviceType("");
-        ev.setOs("");
+        // M2-32：device_type 落容器、os 落设备大类（词汇表与 route 条件值同源，见 DESIGN 4.2）。
+        // 认不出一律写 unknown 而不是空串：空串的意思是"这列没填"（M1 的历史行就是那样），
+        // unknown 的意思是"填了但认不出"；至于是"没带 UA"还是"带了但没匹配上"，看 user_agent 是否为空。
+        UaClassifier.Profile profile = uaClassifier.classify(userAgent);
+        ev.setDeviceType(profile.container().key());
+        ev.setOs(profile.device().key());
         ev.setProvince("");
         ev.setCity("");
         ev.setChannelId(nullToEmpty(rc.channelId()));

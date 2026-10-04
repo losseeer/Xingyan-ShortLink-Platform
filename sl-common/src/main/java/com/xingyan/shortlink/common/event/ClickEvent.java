@@ -3,7 +3,11 @@ package com.xingyan.shortlink.common.event;
 /**
  * ClickEvent 契约（DESIGN 6.3/附录 A 口径，4.2 click_event 列对齐）。
  * SNAKE_CASE 序列化为 Kafka 消息体；event_id 为幂等键（CH ReplacingMergeTree 去重）。
- * M1 口径：device/os/geo 留空（UA 解析属 M2 动态路由），risk_score/is_bot 恒 0（M2 风控）。
+ *
+ * <p>M2-32 起 {@code deviceType}（容器）与 {@code os}（设备大类）由 jump 侧 UA 特征表填真实值，
+ * 认不出填 {@code unknown} 而不是空串——空串留给"这列没被写过"，两种情况在看板上含义不同。
+ * M1 遗留口径：{@code province/city} 仍为空（离线地理库未接入，DESIGN 6.2 的能力边界），
+ * {@code riskScore} 只有超频 +25、{@code isBot} 恒 0（评分层未交付）。
  */
 public class ClickEvent {
 

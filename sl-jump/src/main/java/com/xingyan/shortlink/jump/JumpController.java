@@ -1,6 +1,7 @@
 package com.xingyan.shortlink.jump;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -31,6 +32,13 @@ public class JumpController {
             return ResponseEntity.status(HttpStatus.FOUND)
                     .location(URI.create(decision.location()))
                     .<String>build();
+        }
+        if (decision.htmlBody() != null) {
+            // 中间页带的是"这一次点击"的归因参数，缓存过就等于把 A 的 click_id 发给 B
+            return ResponseEntity.status(decision.status())
+                    .contentType(MediaType.TEXT_HTML)
+                    .cacheControl(CacheControl.noStore())
+                    .body(decision.htmlBody());
         }
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(decision.status())
                 .contentType(MediaType.TEXT_HTML);

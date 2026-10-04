@@ -36,8 +36,15 @@ spring:
 
 xsl:
   jump:
-    # M1 纯 302（DESIGN 第十章开关）；动态路由匹配实现留 JumpResolver 接口扩展位
-    mode: ${XSL_JUMP_MODE:direct302}
+    # 跳转形态（DESIGN 6.2「真开关」，M2-33 起是条件装配而不是注释）：
+    #   dynamic（默认）= 按 route_json.rules 做一级决策，四类 target 各自决定 302 还是中间页；
+    #   direct302      = 回退形态，永远 302 到 origin_url，任何请求都不返回 200 HTML。
+    # 回退只需要改一个环境变量：XSL_JUMP_MODE=direct302。两个实现共用同一条决策链（频控/配额/事件顺序不变）。
+    mode: ${XSL_JUMP_MODE:dynamic}
+    # 小程序 URL Link 的生成方：本期只有 mock（返回确定性假链接，可被 UA 重放断言）。
+    # 真实实现落地时提供另一个 UrlLinkProvider bean 并把这里改成 urllink。
+    urllink:
+      provider: ${XSL_JUMP_URLLINK_PROVIDER:mock}
     local-cache-size: ${XSL_JUMP_L1_SIZE:10000}
     local-cache-ttl-seconds: ${XSL_JUMP_L1_TTL:30}
     click-topic: ${XSL_CLICK_TOPIC:shortlink-click}

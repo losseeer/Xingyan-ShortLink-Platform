@@ -168,6 +168,11 @@ services:
       SERVER_PORT: "8020"
       XSL_INSTANCE: jump-1
       XSL_JUMP_WAL_DIR: /app/data/wal
+      # 跳转形态与 URL Link provider 要能"改一个环境变量就切回去"（DESIGN 6.2 的真开关）。
+      # 不透传的话，application.yml 里的 ${XSL_JUMP_MODE:...} 永远只能看到默认值，
+      # 开关等于只在宿主机 java -jar 时才存在——那不算支持。
+      XSL_JUMP_MODE: ${XSL_JUMP_MODE:-dynamic}
+      XSL_JUMP_URLLINK_PROVIDER: ${XSL_JUMP_URLLINK_PROVIDER:-mock}
     ports: ["8020:8020"]  # 宿主端口仅供直连调试；对外入口是 nginx :80
     volumes:
       - ./data/jump-wal/jump-1:/app/data/wal
@@ -187,6 +192,8 @@ services:
       SERVER_PORT: "8020"
       XSL_INSTANCE: jump-2
       XSL_JUMP_WAL_DIR: /app/data/wal
+      XSL_JUMP_MODE: ${XSL_JUMP_MODE:-dynamic}
+      XSL_JUMP_URLLINK_PROVIDER: ${XSL_JUMP_URLLINK_PROVIDER:-mock}
     ports: ["8022:8020"]
     volumes:
       - ./data/jump-wal/jump-2:/app/data/wal

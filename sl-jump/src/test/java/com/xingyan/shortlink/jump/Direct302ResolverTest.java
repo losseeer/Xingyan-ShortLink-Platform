@@ -3,12 +3,14 @@ package com.xingyan.shortlink.jump;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
 import com.xingyan.shortlink.common.route.RouteConfig;
+import com.xingyan.shortlink.common.route.RouteRule;
 import com.xingyan.shortlink.common.route.UaClassifier;
 import com.xingyan.shortlink.common.route.UaFeature;
 import com.xingyan.shortlink.jump.event.ClickEventProducer;
 import com.xingyan.shortlink.jump.event.WalQueue;
 import com.xingyan.shortlink.jump.risk.RateLimiter;
 import com.xingyan.shortlink.jump.route.RouteRepository;
+import com.xingyan.shortlink.jump.target.MockUrlLinkProvider;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +25,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -61,7 +64,7 @@ class Direct302ResolverTest {
                 List.of(new UaFeature("wechat", List.of("micromessenger"))),
                 List.of(new UaFeature("ios", List.of("iphone"))));
         resolver = new Direct302Resolver(routes, counter, rateLimiter, producer, new SnowflakeIdGenerator(),
-                mapper, new SimpleMeterRegistry(), uaClassifier, "test-salt");
+                mapper, new SimpleMeterRegistry(), uaClassifier, new MockUrlLinkProvider(), "test-salt");
     }
 
     private void allowAll(int limit) {
@@ -196,5 +199,24 @@ class Direct302ResolverTest {
         String noUa = String.valueOf(captor.getAllValues().get(1).value());
         assertTrue(noUa.contains("\"device_type\":\"unknown\""), noUa);
         assertTrue(noUa.contains("\"os\":\"unknown\""), noUa);
+    }
+
+    /**
+     * 回退开关的可证伪面：{@code direct302} 下就算快照里带着 app_scheme 规则，
+     * 也一定还是 302、绝不返回 200 中间页（M2-35 的开关验证段断言的是同一件事，只是走活体链路）。
+     */
+    @Test
+    void directModeIgnoresRulesAndNeverRendersPage() {
+        var withRules = new RouteConfig("https://mock.ticketsales.test/show/1", 1001, 1, null, null, 0, 1,
+                "ch-9", "cm-9", null, null, List.of(new RouteRule(1, RouteRule.UA_CONTAINER, "eq", "wechat",
+                RouteRule.T_APP_SCHEME, null, "xyapp://open/order", "https://mock.ticketsales.test/dl")));
+        when(routes.find("rule0001")).thenReturn(Optional.of(withRules));
+        MockHttpServletRequest wechatIphone = new MockHttpServletRequest();
+        wechatIphone.addHeader("User-Agent", "Mozilla/5.0 (iPhone) MicroMessenger/8.0.40");
+
+        var d = resolver.resolve("rule0001", wechatIphone);
+        assertEquals(HttpStatus.FOUND, d.status());
+        assertNull(d.htmlBody(), "direct302 形态不产出中间页");
+        assertTrue(d.location().startsWith("https://mock.ticketsales.test/show/1?"), d.location());
     }
 }

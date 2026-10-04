@@ -374,7 +374,7 @@ Xingyan-ShortLink-Platform/          # 实际仓库名（下图按 m1 收口时�
    - **口径澄清（v2.3.0）**：这一层实现的是**固定 60s 窗口计数**（键里带槽位），不是严格滑动窗口——初稿写"滑动"名不副实，现按实现改口径。代价是窗口边界最坏可放行约 2× 阈值；不做成滑动有两个具体理由：① 加权滑动要同时读"当前槽 + 上一槽"，多键 Lua 在 Redis Cluster 下要求两键同槽，与 8.1-B「键设计已预留无跨槽操作约束」的扩展承诺冲突（要做滑动必须同时给键加 hash tag，属另一轮改动）；② jump 是 ×2 实例，上一槽计数若走进程内缓存会因轮询被劈成两半而低估，若多读一次 Redis 则热路径上每次跳转多一个往返。
    - **IP 取值**：以 nginx **覆盖写入**的 `X-Real-IP`（= `$remote_addr`）为准，其次才取 `X-Forwarded-For` 的**末段**（nginx `$proxy_add_x_forwarded_for` 追加的那一跳），最后回落 `remoteAddr`。客户端自带的 XFF 首元素可任意伪造，不能作为频控维度（同一口径也用于 4.2 的 `ip_hash`）。
    - 命中后：返回 429 + `Retry-After`（到本槽结束的秒数），不发 302、不扣 `access_limit`（见 5.2 步骤 3）；被拦击**仍发 ClickEvent** 并置 `risk_score += 25`（本层贡献分），`is_bot` 由第 3 层评分判定后写，本层不越权标注。
-   - 降级：Redis 不可用时退化为进程内窗口计数（见 8.3），并打 `xsl_jump_rate_limit_total{result="degraded"}` 供告警区分。
+   - 降级：Redis 不可用时退化为进程内窗口计数（见 8.3），并以 `xsl_jump_rate_limit_total{mode="local"}` 与正常路径区分（实现里的标签是 `result=allow|block|error` + `mode=redis|local`，不是把降级塞进 result；本句此前写的是 `{result="degraded"}`，属文档与现实不符，M2-36 按实现改正）。
 3. **行为评分（同步、轻量）**：无/异常 Referer + UA 异常（无 Mobile 标志、Headless 特征）+20；命中 IDC/代理 IP 库 +30；超频阈值 +25。**score ≥ 40 → 返回验证页/安全落地页**而非真实跳转，事件仍记录并标记 `is_bot=1`。IP 库每日离线更新（新增：初稿未提更新机制，IDC 段失效则第三层形同虚设）。
 4. **事后审计（异步）**：Consumer 侧模型化二次判定（如按 UA 分布突变、点击-下单时间差异常聚类），修正 `is_bot`，看板输出"有效点击 / 疑似刷量"双指标。
 
@@ -468,6 +468,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 - 看板查询统一走 ClickHouse（明细抽样 + 聚合表），管理面 MySQL 不参与统计查询。
 - 对外指标：PV/UV、有效点击、疑似刷量、分容器到达率、（Join 订单后）转化率。
 - 与宣发数据平台的边界：本系统只负责**点击侧**事实数据与归因参数签发；转化侧口径由宣发平台定义，`xy_click_id` 为唯一对账键。
+- **对账键现在只存在于 URL 与 Kafka 消息体里**：`click_event` 明细表没有 `xy_click_id`/`trace_id` 列（4.2/8.5 已注明），所以"分容器到达率"能算、"点击 ↔ 订单"按 click_id join 还算不了。M3 的订单回流与端到端对账第一步是给明细补这一列（先改契约，再重跑 `accept-m2-32/35`）。
 
 ---
 
@@ -564,8 +565,9 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 
 ### 8.5 可观测性（新增）
 
-- Metrics：跳转 QPS/延迟分位/缓存命中率/频控拦截数/bot 比例/池水位/outbox 积压/Kafka lag，Prometheus + Grafana（compose 可选 profile，见 3.3）；告警以 cron 脚本查 PromQL 阈值等价实现（单机无 Alertmanager 必要）。核心 5 项：跳转错误率、命中率 < 97%、Kafka lag、池水位 < 20%、WAL 积压。
-- Tracing：跳转请求生成 `trace_id`，随 `xy_click_id` 关联，贯通 ClickEvent。
+- Metrics：跳转 QPS/延迟分位/缓存命中率/频控拦截数/bot 比例/池水位/outbox 积压/Kafka lag，Prometheus + Grafana（compose 可选 profile，见 3.3）；告警以 cron 脚本查PromQL 阈值等价实现（单机无 Alertmanager 必要）。核心 5 项：跳转错误率、命中率 < 97%、Kafka lag、池水位 < 20%、WAL 积压。
+- **数据面现有指标（M2-36 按实现核对，命名即验收口径）**：`xsl_jump_requests_total{outcome}`、`xsl_jump_route_lookup_total{level=local|redis|db|miss}`、`xsl_jump_rate_limit_total{result,mode}`、`xsl_jump_access_counter_total{result=rebuild|degraded_allow}`、`xsl_jump_clickevent_total{result=sent|wal|build_error}`、`xsl_jump_wal_replayed_total`/`xsl_jump_wal_replay_failed_total`/`xsl_jump_wal_backlog_bytes`、`xsl_jump_route_target_total{kind=h5|app_scheme|wx_urllink|intermediate}`（M2-33，一级决策命中分布）、`xsl_jump_route_rule_unusable_total{type}`（命中了但目标残缺/时间窗串形不对——这类"静默跳过"必须可数）；管理面 `xsl_quota_reconcile_total`，消费者 `xsl_consumer_ch_posts_total{result}`/`xsl_consumer_ch_rows_total`/`xsl_consumer_ch_post_seconds`。
+- Tracing：跳转请求生成 `trace_id`，随 `xy_click_id` 一起进 ClickEvent（消息体里有）。**但明细表 `click_event` 目前没有 `trace_id`／`xy_click_id` 列**，consumer 也不写这两个字段，所以"点击 ↔ 订单"在 CH 里还没有可对键——端到端对账脚本的前提，M3 动手前要先补契约（ITER-M2 §6）。
 - 日志：数据面采样日志（1%）+ 风控命中全量；跳转路径**不打印完整 origin_url 与明文 IP**（脱敏）。
 
 ---

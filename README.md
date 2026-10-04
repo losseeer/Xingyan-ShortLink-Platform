@@ -46,14 +46,19 @@
 make devenv     # 生成 deploy/compose/.env（已存在则不覆盖）
 make verify     # 全仓单元 + 活体集成测试（需 Docker 已起，MySQL 3307 / Redis 6380）
 make images     # 宿主 mvn package 产物 + JRE 一层 → xsl/{gateway,admin,jump,consumer}:dev
-make up         # docker compose up -d --wait，十个容器全部 healthy
+make up         # docker compose up -d --wait，十个容器全部 healthy（前置 make tls，见下）
 make db-init    # MySQL schema 幂等重放（全新数据卷由镜像 entrypoint 自动执行）
 make ch-init    # ClickHouse 应用账号 xsl_app（口令从 .env 经 SQL 写入，不落仓库）
 make seed       # 灌网关鉴权所需 api_key → tenant 字典
 make demo       # 一键演示，见下节（内部已含 db-init/ch-init/seed）
 ```
 
-其他入口：`make ps` / `make logs` / `make down` / `make nginx-reload`（单独 `--force-recreate` 某个 jump 换 IP 后优雅重载）。
+`make up` 会先跑 `make tls`：为 mock 购票页生成**本地自签证书**到 `deploy/compose/tls/`（幂等、已 gitignore）。
+这一步不是装饰——短链 302 的终点是 `https://mock.ticketsales.test/…`，nginx 不在 443 上应答就打不开；
+而目录不存在时 Docker 会替我们建一个空目录，nginx 只在容器日志里报 `cannot load certificate`，
+所以把它做成前置而不是让人去猜报错。
+
+其他入口：`make ps` / `make logs` / `make down` / `make nginx-reload`（单独 `--force-recreate` 某个 jump 换 IP 后优雅重载）、`make tls`（换发自签证书：删掉 `deploy/compose/tls/` 再跑）。
 
 轮换口令的顺序有讲究——只改 `.env` 不会改数据卷里的真实账号：
 
@@ -79,18 +84,19 @@ make images && make demo
 2. 幂等重放 `deploy/compose/init/mysql/*.sql` + 灌 `sl:tenant:api`；
 3. 用 HMAC 签名经 **nginx → gateway → admin** 创建一条带 `channel_id/campaign_id/promoter_id` 的链接（不注入 `X-Tenant-Id`，走真实鉴权）；
 4. `curl --resolve` 三个域名各点若干击，打印每条 302 的 Location——可看到归因参数插在 `#buy` 片段之前、`utm_source` 透传、非白名单参数被丢弃；顺带打印未登记 Host 的 444 拦截；
-5. 轮询 `GET /api/v1/stats/links/{code}`（nginx 按最长前缀命中 consumer）直到 ClickHouse 可见计数追平实际点击数；
-6. 结尾给出复看命令（直查 CH、看 nginx 的 `$upstream_addr` 轮询证据、`docker restart xsl-jump-1-1` 做滚动重启演练）。
+5. **跟着 302 打到终点**（4b 段）：取上一步的 Location，用 `--resolve mock.ticketsales.test:443` 打进去，断言 200 并确认落地的是 mock 购票页——归因的最后一公里由此变成看得见的一环；
+6. 轮询 `GET /api/v1/stats/links/{code}`（nginx 按最长前缀命中 consumer）直到 ClickHouse 可见计数追平实际点击数；
+7. 结尾给出复看命令（直查 CH、看 nginx 的 `$upstream_addr` 轮询证据、`docker restart xsl-jump-1-1` 做滚动重启演练）。
 
 可调环境变量：`CLICKS_PER_DOMAIN`、`STATS_WAIT_SECS`、`NGINX_PORT`、`API_KEY`。
 
-**浏览器里点短链**需要先让本机解析这三个域：
+**浏览器里点短链**需要先让本机解析这几个域（`.test` 是保留 TLD，公网不解析）：
 
 ```bash
-echo '127.0.0.1 xy1.test xy2.test xy3.test' | sudo tee -a /etc/hosts
+echo '127.0.0.1 xy1.test xy2.test xy3.test mock.ticketsales.test' | sudo tee -a /etc/hosts
 ```
 
-两点诚实口径：本机 nginx 只监听 80，API 返回的 `short_url` 是生产口径 `https://xy1.test/{code}`，浏览器演示请用等价地址 `http://xy1.test/{code}`；跳转目标 `mock.ticketsales.test` 目前无本地服务，302 之后浏览器是 DNS 错误——mock 购票页容器排在 M2/M3（见 [docs/iterations/ITER-M1.md](docs/iterations/ITER-M1.md) §6）。
+三点诚实口径：本机 nginx 只监听 80，API 返回的 `short_url` 是生产口径 `https://xy1.test/{code}`，浏览器演示请用等价地址 `http://xy1.test/{code}`；跳转终点 `https://mock.ticketsales.test/…` 由 nginx 在 443 上用**本地自签证书**应答（`make tls` 生成），浏览器会告警，手动继续即可——这里不宣称"证书受信"；购票页只回显参数与假选座，不下真订单（`xy_click_id` 与订单的关联回传属 M3，见 [docs/iterations/ITER-M2.md](docs/iterations/ITER-M2.md) §6）。
 
 ## 验收脚本
 
@@ -99,11 +105,13 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test' | sudo tee -a /etc/hosts
 | 脚本 | 覆盖 |
 |---|---|
 | `scripts/accept-m1-04.sh` | HMAC 签名/时间戳窗口/nonce 防重放/未知 key/幂等重放 |
-| `scripts/accept-m1-06.sh` | 创建链路：三表 + outbox + 缓存一致、准入 400、越权 403、自定义码冲突 |
-| `scripts/accept-m1-07.sh` | 跳转语义 302/404/403/410 + 冷码回源二查命中缓存（metrics 佐证） |
+| `scripts/accept-m1-06.sh` | 创建链路：三表 + outbox + 缓存一致、准入 400、越权 403、自定义码冲突；M2-31 起含规则双轨契约（`rules[]` 绑定、编译序、PATCH 不清规则、空数组清空） |
+| `scripts/accept-m1-07.sh` | 跳转语义 302/404/403/410 + 冷码回源二查命中缓存（metrics 佐证）。默认形态已是 `dynamic`，无规则链接的 Location 与 M1 逐字符同形就是靠它在守住 |
 | `scripts/accept-m1-09.sh` | 1000+ 击端到端一致、Kafka pause 期间 WAL 兜底与恢复重放（丢失率首证） |
 | `scripts/accept-m1-10.sh` | 三域同一 Location、双实例承载分布、滚动重启期间 0×5xx、控制面宕机不影响跳转 |
 | `scripts/accept-m2-13.sh` | 频控：阈值内 302／越界 429、伪造 XFF 绕不过、被拦不烧配额、被拦击仍入库、丢键后按快照收口、Redis 停机降级 |
+| `scripts/accept-m2-32.sh` | UA 特征表落库：13 条真实 UA 逐条对上 `click_event.(device_type, os)`、空值 0、聚合层 `wx_pv/douyin_pv/browser_pv` 与同一套词汇表贯通 |
+| `scripts/accept-m2-35.sh` | **M2 出口标准**：15 条 UA 重放断 target_type／响应形态／中间页内容与 `no-store`／跨维度 priority 排序／无匹配落 origin／CH 取数／跟着打到 mock 购票页／`XSL_JUMP_MODE=direct302` 回退与复位 |
 | `scripts/demo.sh` | 端到端演示（`make demo`） |
 
 ## 当前状态
@@ -114,4 +122,13 @@ M2（动态路由与防刷）进行中。**M2-00 资源预算重排 + 跳转 P99
 
 **防刷主线（M2-10…M2-15）同日收口**：Redis 窗口频控（`sl:rl:{code}:{iphash}:{slot}`，单脚本 INCR+首次 EXPIRE）命中返回 429 且**不消耗配额**；客户端 IP 只信 nginx 覆盖写入的 `X-Real-IP`（原来取 `X-Forwarded-For` 首元素，客户端可伪造 → 频控可绕、`ip_hash` 不可信）；被拦的击仍进事件流并记 `risk_score=25`；`access_limit` 补齐对账（Redis 权威值 → `link_route.access_used` 快照，管理面每 60s 回写），丢键后按快照重建而不是回到满额；Redis 停机时频控退化为进程内计数、跳转不跌零。端到端验收 `scripts/accept-m2-13.sh` 17/17，五套旧验收全绿，DESIGN 8.1-A 的「频控 Lua ≥3 万次/s」由未测转为实测（单连接 2.78 万/s、10 连接 16.7 万/s）。详见 [docs/iterations/ITER-M2.md](docs/iterations/ITER-M2.md)。
 
-剩下的 M2 待办：**M2-01 事件链批量化已于 2026-10-03 收口**（`async_insert(wait=1)` + 5000 行/批 + producer 攒批 + topic 1→4 分区：chain-live 平顶 12,185 → **18,193 QPS（+49%）**、追赶 29,578 → 41,223 events/s、事件链 CPU 2.17 → 0.92 核、丢失率全程 0.0000%；**≥20k 的目标未达成，差 9%**，瓶颈已移到数据面自身）。仍在待办：route_rule 双轨 + UA 路由引擎 + 中间页、行为评分规则表、签发链路换工具复测。
+**M2-01 事件链批量化已于 2026-10-03 收口**（`async_insert(wait=1)` + 5000 行/批 + producer 攒批 + topic 1→4 分区：chain-live 平顶 12,185 → **18,193 QPS（+49%）**、追赶 29,578 → 41,223 events/s、事件链 CPU 2.17 → 0.92 核、丢失率全程 0.0000%；**≥20k 的目标未达成，差 9%**，瓶颈已移到数据面自身）。
+
+**动态路由主线（M2-30…M2-36）已于 2026-10-04 收口**，M2 的出口标准"UA 重放脚本全绿"由 `scripts/accept-m2-35.sh` **87/87** 达成：
+
+- **规则双轨**（M2-31）：`route_rule` 是管理面行式真源，保存时编译进 `link_route.route_json.rules` 成为数据面唯一读取源；`PUT /links/{code}/rules` 整体替换，非法规则 400 且**不占短码**，PATCH 元数据不会静默清空规则。
+- **UA/容器特征引擎**（M2-32）：特征表只在 `sl-jump/application.yml` 里有一份（代码不留默认表，配错启动即失败），容器与设备是两次独立判定；`click_event.device_type/os` 从恒为空串变成真取值，且**规则条件值 = 事件取值 = CH 聚合字面量**同一套词汇表（这条贯通性由 `accept-m2-32.sh` 断言）。
+- **一级决策 + 中间页 + 真开关**（M2-33）：按 priority 取首条命中，四类 target 各自决定 302 还是 200 中间页（`Cache-Control: no-store`——页里带着本次点击的 `xy_click_id`，缓存过就把 A 的 click_id 发给 B）；`xsl.jump.mode` 从注释变成条件装配，默认 `dynamic`，`XSL_JUMP_MODE=direct302 make up` 一键退回纯 302。
+- **mock 购票页**（M2-34）：302 的终点在本地真的能打开（443 + 自签证书 + hosts 一条），query 与 `#fragment` 由页内 JS 回显。
+
+仍在待办：行为评分规则表（`risk_score` 已可写、`is_bot` 仍恒 0）、签发链路换工具复测、M3 的 outbox 同步器与看板。**已知前置缺口**：`click_event` 没有 `xy_click_id` 列、consumer 也不写 `trace_id`，所以"点击 ↔ 订单"在 CH 里目前没有可对键——端到端对账要先改这条契约（ITER-M2 §6）。

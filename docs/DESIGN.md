@@ -693,3 +693,5 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 订单落库归因字段：`click_id, channel_id, campaign_id, promoter_id, first_click_time, last_click_time`（首次/末次归因口径由宣发平台配置）。
 
 实现落点（个人环境）：mock 购票页接收并回显归因参数、mock 订单接口落库，本地即可跑通"点击 → 订单 → 渠道漏斗"完整闭环，契约与生产形态保持一致。
+
+> **M2-35 发现的前置缺口（做端到端对账前必须先解）**：`click_event` 明细表没有 `xy_click_id` 列，consumer 也不写 `trace_id`（上面那张字段表里同样没有），所以"某一次点击"与"某一笔订单"在 CH 里**目前没有可对键**——回传闭环可以跑，对账脚本却无从 join。补齐方式二选一（给明细加 `click_id` 列 / 把 `trace_id` 落库），**先改契约、重跑 `accept-m2-32/35`，再写对账**（ITER-M2 §6）。

@@ -30,6 +30,7 @@
 | M2-32 UA/容器特征引擎 | ✅ 计划内 | ✅ 完成（2026-10-04） | `sl-common` 加 `UaFeature/UaClassifier`（容器与设备两次独立判定、首个子串命中即定类、配错的表在构造期抛异常）；特征表落在 `sl-jump/application.yml` 的 `xsl.jump.ua`（代码里不留默认表）；jump 把分类结果写进 `ClickEvent.device_type/os`（此前恒为空串）。**顺带把 M2-31 用的容器 key 从 `micromessenger` 改成 `wechat`**，让规则条件、事件取值、CH MV 字面量三处共用一套词汇表（§4）。验证见 §3 两行 |
 | M2-33 一级决策 + 中间页 + 真回退开关 | ✅ 计划内 | ✅ 完成（2026-10-04） | 决策链抽成 `JumpChain`（抽象），`Direct302Resolver` / `DynamicRouteResolver` 两个 `JumpResolver` 实现由 `xsl.jump.mode` 条件装配选一（默认 `dynamic`）；四类 target → `h5`=302、`app_scheme`/`wx_urllink`/`intermediate`=200 中间页（`Cache-Control: no-store`）；`UrlLinkProvider` + `MockUrlLinkProvider`。**过程中补掉 compose 没透传 `XSL_JUMP_MODE` 这条假承诺**，并修了"数据面按数组顺序而不是 priority 取首条"的真 bug（§4）。验证见 §3 两行 |
 | M2-34 mock 购票页（nginx 静态回显） | ✅ 计划内 | ✅ 完成（2026-10-04） | 新增 `nginx/html/mock-ticket.html` + `conf.d/30-mock-page.conf`：`mock.ticketsales.test` 在 :80 与 :443 都给出回显页（query 与 `#fragment` 由页内 JS 读，服务端回显 fragment 做不到）；本地自签证书由 `scripts/gen-mock-tls.sh` 幂等生成到 `deploy/compose/tls/`（不入库，`make tls` 已挂成 `up` 的前置）。`make demo` 新增 4b 段，跟着 302 真打一次终点并断言 200 |
+| M2-35 UA 重放测试集（**M2 出口标准**） | ✅ 计划内 | ✅ 完成（2026-10-04） | `scripts/accept-m2-35.sh` **87/87**：15 条真实 UA 逐条断 target_type/响应形态/中间页里的 scheme·urlLink·引导地址/no-store，再叠跨维度 priority 排序（B）、全不命中落 origin（C）、`device_type/os` 入库（D）、跟着中间页打到 mock 购票页（E）、`XSL_JUMP_MODE=direct302` 的回退与复位（F，含容器 `printenv` 断言） |
 
 ## 3. 实测数字与凭证
 
@@ -56,6 +57,7 @@
 | M2-33 一级决策与回退开关（活体，手工验证） | 四类 target 各出对的响应形态；改一个 env 能退回纯 302 | 同一份规则（`wechat→app_scheme`、`douyin→wx_urllink`、`default→intermediate`）在部署栈上实测：**微信 iPhone = 200 + `Cache-Control: no-store`**，页面里是 `'xyapp://open/order?id=9'` 与拼了归因的兜底 H5；**抖音 = 200**，页面自动跳向 mock 串 `https://wxaurl.cn/xsl-mock/8a302edb`；**Windows Chrome = 200** 引导页（"本页不会自动跳转"）且按钮 href 带 `notice?channel_id=ch-m233`。然后 `XSL_JUMP_MODE=direct302 make up`：同样两击都变 **302、body=0B、无 cache-control 头**，容器里 `printenv XSL_JUMP_MODE=direct302`；复位 `make up` 后 env 回到 `dynamic`。**这一条的价值在 compose 透传之后才成立**（见 §4：透传前"改环境变量就能回退"在部署形态下是假的）。正式断言集落在 M2-35 | 本轮为手工序列（临时脚本 `/tmp`，未入库）；M2-35 把它写成 `accept-m2-35.sh` 的开关段后本行以脚本输出为准 |
 | M2-33 之后的全量回归（dynamic 成默认形态） | 新默认值不得影响既有链路 | ✅ **0 回归**（2026-10-04 11:2x–11:4x，dynamic 模式的 build）：`make verify` 全仓 **125 测 / 0 失败 / 0 跳过**（sl-jump 30 → 54：`DynamicRouteResolverTest` 14 条覆盖四类 target + priority 与数组顺序无关 + geo 恒不匹配 + time_window 含首尾 + 命中但目标残缺的跳过、`IntermediatePageTest` 6 条含 `</script>` 注入尝试、`JumpControllerTest` 3 条钉 no-store、direct 侧 1 条"有规则也不出页面"）；六套旧验收全绿：`accept-m1-06` **33/33**、`accept-m1-07` **15/15**（无规则链接的 Location 与 M1 逐字符同形）、`accept-m1-09` **14/14**、`accept-m1-10` **19/19**、`accept-m2-13` **17/17**、`accept-m2-32` **19/19** | 脚本输出即凭证；契约变更清单＝`JumpDecision` 增 200 HTML 形态（响应头多 `Cache-Control: no-store`）+ `xsl.jump.mode` 从注释变成条件装配（默认 `direct302` → **`dynamic`**）+ compose 透传 `XSL_JUMP_MODE`/`XSL_JUMP_URLLINK_PROVIDER` + 新指标 `xsl_jump_route_target_total{kind}`、`xsl_jump_route_rule_unusable_total{type}` |
 | M2-34 mock 购票页与 302 最后一里 | `curl --resolve` 能看到回显；`make demo` 的 302 终点从死链变成可看点 | curl 侧（4 项）：`http://mock.ticketsales.test/show/7?utm_source=sms` **200 / 5,588B**；`https://…/dl?channel_id=ch-x#seatB` **200**，协商到 **TLSv1.3**；同一 443 上未登记 Host `evil.example` → **空响应（444 掐断）**，域名白名单语义在 TLS 侧也成立；`/healthz` 200。端到端：短链 302 的 Location 是 `https://mock.ticketsales.test/show/m234?channel_id=…&xy_click_id=c365…`，跟着打完得到 **200**。回显逻辑用内置浏览器跑同一份 HTML 实测：`xy_click_id`/`channel_id`/`campaign_id`/`promoter_id`/`utm_source`/`utm_medium` 逐格填出值、非归因参数 `seat=B7` 落到"其它参数"、fragment 显示解码后的"站票"。**为什么换成本地静态服务器打开**：浏览器不认 `mock.ticketsales.test`（`.test` 是保留 TLD），而我不动用户机器的 `/etc/hosts`——所以浏览器这步验的是页面回显，nginx 的 http/443/白名单由 curl 覆盖。**未验证项**：座位按钮的点击交互（内置浏览器没有可附加视口，pointer 操作被拒），如实记为未跑；`make demo` 4b 段则把"跟到终点"固化成命令输出（终点 200、期望事件数 11 = ClickHouse 可见 11） | 加 443 与 mock server 之后六套旧验收仍全绿：`accept-m1-06` 33/33、`m1-07` 15/15、`m1-09` 14/14、**`m1-10` 19/19**（含"未登记 Host 444"那条，现在 TLS 侧也保持同一语义）、`m2-13` 17/17、`m2-32` 19/19。`scripts/demo.sh` 4b 段输出即凭证；curl/浏览器为手工序列，M2-35 会把终点可达性并入 UA 重放脚本 |
+| M2-35 UA 重放测试集（M2 出口标准） | ≥12 条真实 UA 逐条断言命中与响应形态 + 开关验证；全绿即达成 M2 出口标准 | ✅ **87/87**（`scripts/accept-m2-35.sh`，一条命令跑完）。构成：A 段 15 条 UA（6 条规则覆盖四类 target，微信=iPhone/安卓/PC 三形态、抖音双端、QQ 双端、微博双端、支付宝、裸 Safari/Chrome、鸿蒙、curl），每条断 状态码 + `Cache-Control: no-store` + 页内标记（`xyapp://open/order?id=9`、`wxaurl.cn/xsl-mock/`、`购票前请确认票种规则`）+ 落地地址带 `xy_click_id`；B 段跨维度排序（Windows 里的 QQ 走容器规则 `/qq` 而不是设备规则 `/pc`）；C 段无匹配落 `origin_url`；D 段 17 次点击后 CH 里 `(device_type,os)` 逐对对上（重复对按 2 计）且空值 0；E 段从中间页 href 打到 mock 购票页 200、两次点击的 click_id 不同；F 段切 `XSL_JUMP_MODE=direct302` 后同样三击全 302、body 0B、无 cache-control，容器内 `printenv` 确为 `direct302`，复位后仍回 200。同一天再跑六套旧验收全绿（33/15/14/19/17/19）。**边界如实写出**：`click_id` 不落 CH（`click_event` 没有这一列，consumer 也没写 `trace_id`），所以"页面里的 click_id 与事件里的那个是同一个"这条现在无法断言，只能断到"页面带 id、每次不同、终点可达"——补齐它需要给明细表加列，属 M3 端到端对账的前置 | 脚本输出即凭证；F 段会重建 jump 容器（脚本自带复位与 `FLIPPED` 兜底），所以必须排在最后 |
 
 > 口径纪律：仅此处出现且可点达的实测值可进入简历/分享；目标值不得冒充实测。
 
@@ -136,6 +138,14 @@ M2-34 的"最后一里"（2026-10-04），三条都关于**承诺与可达性之
 | 第一次访问回显页得到 404，而 nginx 日志只说 404 不说找的是哪个路径 | 我把 conf 里的 `root` 写成 `/etc/nginx/html/mock`，而挂载点是 `/etc/nginx/html`（多写一层） | `docker exec xsl-nginx-1 ls /etc/nginx/html` 一眼定位。顺手记一条：**配置类 404 先核对挂载根与 root 的对应关系**，别先怀疑 try_files |
 | nginx 两处注释引用的 "DESIGN 10.2" 是个**不存在的小节**（M1-10 就写错了） | 域名白名单的语义实际写在 9.5；而 grep 文档内容永远查不出"指向不存在的锚点"这类错 | 两处一并改成 9.5，并在注释里保留"原注释写的 10.2 是不存在的小节"这句话，免得又被改回去 |
 
+M2-35 把出口标准变成脚本时踩到并记下的（2026-10-04）：
+
+| 偏差点 | 原因 | 处理 |
+|---|---|---|
+| 验收脚本第一次跑出来是 **87 项里 36 红**，而根因只有一行：`rules-put-200 expect=200 actual=400` | 我给 `in` 编了一个词汇表外的条件值（`qq,facebook`）——校验器按设计 400 拒了，于是规则一条没存进快照，15 条 UA 全部落回 `origin_url`，症状却是"动态路由整个不工作" | 先读那一行 400 的响应体（`unknown ua_container: facebook`）再动别的。脚本里把 `in` 换成 `qq,weibo` 并删掉单独的 weibo 规则，同时把 weibo 样本的期望换成 `/qq`，让"in 列表第二个值也算命中"变成一条**断言**而不是巧合。附带结论：校验器确实挡住了"看起来能用、其实永远匹配不上"的值 |
+| **"页面里的 click_id 与事件里的 click_id 是同一个"这条断不出来** | `click_event` 明细表没有 `xy_click_id` 列，consumer 的 `toRow()` 也没写 `trace_id`（DESIGN 4.2 的字段表里同样没有这一列）——所以"点击 ↔ 订单"在 CH 里目前**没有可对键** | M2-35 只断到"页面带 id、两次点击 id 不同、跟着能打到 mock 购票页"，并把缺口写进 §3 与 §6：补齐它要先给明细加列或把 trace_id 落库，**先改契约再写脚本**（属 M3 端到端对账那格） |
+| 开关段（F）要重建 jump 容器，排在前面会污染后面的断言 | 与 M2-13 的 Redis 停机演练同构：切换/故障动作一发生，Redis 与 L1/L2 缓存就进入刚恢复的不稳定窗口 | 固定排在最后，并让脚本自带复位（`FLIPPED` 标记 + EXIT trap 里兜底 `make up`），失败中断也不会把栈留在 `direct302` |
+
 ## 5. 本期决策记录
 
 - **M2-00 先做诊断再动配置**：M1-11 只证明了"不是 GC"。尾巴到底在 jump 进程内、nginx 排队、还是同机压测客户端争抢 CPU，决定治理手段完全不同；因此第一步是给链路加**可归因的观测量**（nginx 侧 `$upstream_connect_time`/`$upstream_response_time` 与 `$request_time` 分解、jump 侧 HTTP 服务端延迟分布），拿一轮数据定位，再谈调参。
@@ -184,11 +194,16 @@ UA 引擎落地时（M2-32）另外定三件：
 - **`scheme://` 不带归因参数**：App deeplink 的点击回执需要 SDK 配合，是另一条链路。在这里硬拼上去，"归因已贯通"这句话就变成假的——宁可中间页的兜底 H5 带全参数，scheme 保持原样。
 - **mock 的 URL Link 用确定性串**（`https://wxaurl.cn/xsl-mock/{sha1(path|落地地址) 前 8 位}`）：同一规则 + 同一落地地址永远同一个链接，UA 重放脚本敢断言；而落地地址带着 `xy_click_id`，所以"每次点击的 link 不同"这条也顺带可验。真实 provider 换上时只需要换一个 bean。
 
+M2 出口标准落地时（M2-35）定一条：
+
+- **出口标准必须是一条能一把跑完的命令**，而不是"逐条手工看"。`scripts/accept-m2-35.sh` 的 87 项里同时覆盖了 M2-32 的取数口径、M2-33 的四类 target 与开关、M2-34 的最后一公里；任何一环退化都会红在**具体样本名**上（`A-wechat-windows-pc-scheme`、`F-douyin-android-no-cache-control`），所以断言粒度按"样本 × 属性"而不是按"接口"。
+
 ## 6. 下期待办与风险
 
-- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。当时留给用户选的两项里，**M2-01 事件链批量化已收口**（见下面第四条），**动态路由主线进行中**：M2-30（口径）、M2-31（route_rule 双轨）、M2-32（UA/容器特征引擎）、M2-33（一级决策 + 中间页 + 真开关）、M2-34（mock 购票页 + 443 自签）均完成于 2026-10-04，下一项是 **M2-35 UA 重放测试集**（`scripts/accept-m2-35.sh`，M2 的出口标准"UA 重放脚本全绿"就落在它身上）。
-- **M2-35 要接手的四件事**：① M2-33 的开关与三形态、M2-34 的终点可达性目前都是**手工序列**（§3 那两行写明了凭证形态），脚本化时逐条断言 `200 + Cache-Control: no-store` 与"切 `XSL_JUMP_MODE=direct302` 后全 302、body 0B"，并包含 `docker exec xsl-jump-1-1 printenv XSL_JUMP_MODE` 这一步（透传缺失就是这么溜过去的）；② UA 样本沿用 `accept-m2-32.sh` 那 13 条 + "每对 `(容器,设备)` 唯一"的约束；③ mock URL Link 断言用前缀 + 长度而不是全等串；④ mock 购票页的**座位按钮交互未验证**（内置浏览器拿不到可附加视口），要么补一次真实浏览器手测并在 §3 记一行，要么在脚本里声明"只断言回显，不测交互"。
-- **M2-34/M2-35 要知道的五件事**：① M2-33 的开关验证是**手工序列**（§3 那行写得很明白），M2-35 必须把它写成 `accept-m2-35.sh` 的断言段——包括"容器里 `printenv XSL_JUMP_MODE` 真变了"这一步，透传缺失就是这么溜过去的；② 中间页三形态的凭证目前只有单测 + 手工输出，脚本化时逐类都要断 `Cache-Control: no-store`；③ UA 样本集沿用 `accept-m2-32.sh` 那 13 条 +"每对 `(容器,设备)` 唯一"的约束，扩样本时别破坏它；④ mock URL Link 是确定性串（`xsl-mock/{8 位 hash}`），断言别写成全等串，用前缀 + 长度；⑤ 同天用开关当对照组测一次 c=4 开销（§3 那行 0.245/0.288ms 与昨日不可比，缺的就是同天对照）。
+- **防刷主线已收口（2026-10-03）**：M2-10…M2-15 全部完成，五套旧验收 + `accept-m2-13` 在新 build 上全绿（§3 末两行），两处 M1 遗留改名做掉。当时留给用户选的两项里，**M2-01 事件链批量化已收口**（见下面第四条），**动态路由主线进行中**：M2-30（口径）、M2-31（route_rule 双轨）、M2-32（UA/容器特征引擎）、M2-33（一级决策 + 中间页 + 真开关）、M2-34（mock 购票页 + 443 自签）、M2-35（UA 重放测试集 **87/87**，**M2 出口标准达成**）均完成于 2026-10-04，只剩 **M2-36 收口**（DESIGN 复核、README 演示章节、ITER 定稿与 tag）。
+- **M2-36 收口要做的四件事**：① README 演示章节补 `make tls` 与 hosts 那条前提（不然"终点可看"在读者机器上不成立）；② DESIGN 8.5 观测清单补 `xsl_jump_route_target_total{kind}` 与 `xsl_jump_route_rule_unusable_total{type}`；③ 六套旧验收 + `accept-m2-32/35` 在最终 build 上一次性复跑，条数写进 §3；④ 本机复盘笔记（`docs/PROBLEMS_AND_SOLUTIONS.md`，不入库）从 §4/§5 提升符合门槛的条目。
+- **M3 端到端对账的前置缺口（本轮发现）**：`click_event` 没有 `xy_click_id` 列、consumer 也不写 `trace_id`，所以"点击 ↔ 订单"目前没有可对键。做"订单回流 + 端到端对账 <2%"之前，先决定给明细加列还是把 trace_id 落库，**先改契约再写脚本**，并同步 `accept-m2-32/35` 的取数口径。
+- **本轮遗留的未验证项**：mock 购票页座位按钮的点击交互（内置浏览器拿不到可附加视口，pointer 操作被拒），`accept-m2-35.sh` 只断回显与终点状态。要么真实浏览器手测一次并在 §3 记一行，要么在 README 里明说"只演示参数回显"。
 - **M2-31 给 M2-33 留下的两条硬约束**：① `route_json` 的重编译入口只许一个（`RouteRuleService.validateAndCompile`），任何"顺手 new 一个 RouteConfig"的路径都必须带全字段——本轮的"PATCH 清空规则"就是这么种出来的；② 快照里 `rules` 已就位，一级决策（priority 升序首条生效）与 `xsl.jump.mode` 真开关落地时**不要**新增数据面对 `route_rule` 的读取。
 - **行为评分（DESIGN 5.3 第 3 层）留了明确的接口**：本期已把 `risk_score` 从恒 0 变成可写（超频贡献 +25），`is_bot` 仍恒 0；评分规则表落地时，只需在 `Direct302Resolver` 的频控之后插一层打分并把 `score ≥ 40 → is_bot=1 + 验证页` 判掉，事件与看板口径不用回头再改。
 - **频控的两个已知边界（不在本期解，先记账）**：① 固定 60s 窗口在边界处最坏放行约 2× 阈值 → 真滑动要做就得连 Redis Cluster 的 hash tag 一起改（DESIGN 5.3 第 2 层已写明理由）；② 阈值只有"全局 + 链接级"两层，租户级覆盖与配额（DESIGN 5.3 第 1 层"按租户可配"、6.1 三级配额）是后面的独立任务。

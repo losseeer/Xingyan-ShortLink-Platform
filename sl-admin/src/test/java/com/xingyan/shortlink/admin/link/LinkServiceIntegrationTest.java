@@ -104,9 +104,13 @@ class LinkServiceIntegrationTest {
         // 直写路径现在会把新值按 version 守卫写进 L2 并发一次失效广播（DESIGN 8.4，M3-02）；
         // 测试里没有订阅方，广播就是一条没人收的发布，只多一个计数器。
         RouteCachePublisher routeCache = new RouteCachePublisher(redis, new SimpleMeterRegistry());
+        // 生效域走"关掉选域池"的那条路：本类的断言是 short_url == https://xy1.test/{code}，
+        // 那它必须钉住一个确定的域。domain_pool 的真实选域由 DomainPolicyLiveTest 单独测（DESIGN 9.5，M3-10）
+        DomainPolicy domains = new DomainPolicy(false, "127.0.0.1", 3307, "root", "", "xy1.test", 30,
+                new SimpleMeterRegistry());
         service = new LinkService(redis, jdbc, pool, checker,
                 new SnowflakeIdGenerator(3), new LinkTxWriter(jdbc, mapper, ruleService), mapper,
-                ruleService, routeCache, "xy1.test");
+                ruleService, routeCache, domains);
     }
 
     @AfterEach

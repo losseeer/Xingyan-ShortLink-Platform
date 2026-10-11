@@ -11,7 +11,7 @@ import com.xingyan.shortlink.common.error.ErrorCode;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -51,7 +51,7 @@ public class LinkService {
     private final SnowflakeIdGenerator idGenerator;
     private final LinkTxWriter txWriter;
     private final ObjectMapper mapper;
-    private final String baseDomain;
+    private final DomainPolicy domains;
     private final RouteRuleService ruleService;
     private final RouteCachePublisher routeCache;
 
@@ -64,7 +64,7 @@ public class LinkService {
                        ObjectMapper mapper,
                        RouteRuleService ruleService,
                        RouteCachePublisher routeCache,
-                       @Value("${xsl.link.base-domain:xy1.test}") String baseDomain) {
+                       DomainPolicy domains) {
         this.redis = redis;
         this.jdbc = jdbc;
         this.pool = pool;
@@ -74,7 +74,7 @@ public class LinkService {
         this.mapper = mapper;
         this.ruleService = ruleService;
         this.routeCache = routeCache;
-        this.baseDomain = baseDomain;
+        this.domains = domains;
     }
 
     public Map<String, Object> create(long tenantId, CreateLinkRequest req) {
@@ -310,7 +310,9 @@ public class LinkService {
     }
 
     private String shortUrl(String code) {
-        return "https://" + baseDomain + "/" + code;
+        // 生效域来自 domain_pool（DESIGN 9.5，M3-10）：切域之后新建的链接就换域，
+        // 而存量码照旧在三个域上都能跳——code 与域无绑定这条纪律不能因为换域被破
+        return "https://" + domains.effective() + "/" + code;
     }
 
     private static boolean isBlank(String s) {

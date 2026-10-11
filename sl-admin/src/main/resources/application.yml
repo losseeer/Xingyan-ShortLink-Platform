@@ -24,6 +24,12 @@ xsl:
     allowed-hosts: ${XSL_ALLOWED_HOSTS:mock.ticketsales.test,.xystage.test}
   link:
     base-domain: ${XSL_LINK_BASE_DOMAIN:xy1.test}
+  domain-pool:
+    # 生效域从 xsl_base.domain_pool 里选（DESIGN 9.5，M3-10）：status=0 → weight DESC → domain ASC。
+    # 应急的"人工覆盖"就是把它关掉：一条 XSL_DOMAIN_POOL=false 就让生效域回到上面那个环境变量，不必改数据。
+    # 连接参数沿用分片那一份环境变量（同一个 MySQL 实例，只是不走 ShardingSphere——xsl_base 不分片）。
+    enabled: ${XSL_DOMAIN_POOL:true}
+    refresh-seconds: ${XSL_DOMAIN_POOL_TTL:30}
   quota-reconcile:
     # access_limit 的 Redis 权威值 → link_route.access_used 快照（DESIGN 8.4，M2-12）
     enabled: ${XSL_QUOTA_RECONCILE:true}

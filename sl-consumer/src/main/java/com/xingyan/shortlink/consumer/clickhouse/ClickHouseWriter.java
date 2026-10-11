@@ -23,6 +23,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Map;
 
 /**
  * ClickHouse HTTP 接口写入（JSONEachRow，零额外驱动依赖，DESIGN 4.2 click_event）。
@@ -118,6 +119,38 @@ public class ClickHouseWriter {
     /** 单值读（自证与运维用，和 countByCode 同一条认证/超时路径，避免测试里再拼一份 HTTP 客户端）。 */
     public String scalar(String sql) throws IOException, InterruptedException {
         return post(url, sql).trim();
+    }
+
+    /**
+     * 多行读：JSONEachRow 一行一个对象，回来是列名 → 值的 Map 列表（M3-03 归因回传的聚合走这里）。
+     * SQL 里不要自带 FORMAT——这里补上，两处都有会把结果格式弄成第二个。
+     *
+     * <p>取值请配 {@link #longOf}：ClickHouse 默认把 UInt64 输出成 JSON <b>字符串</b>
+     * （{@code output_format_json_quote_64bit_integers} 默认开），直接强转 Number 会在 count() 这一列上翻车。
+     */
+    public List<Map<String, Object>> rows(String sql) throws IOException, InterruptedException {
+        String body = post(url, sql + " FORMAT JSONEachRow");
+        List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (String line : body.split("\n")) {
+            if (!line.isBlank()) {
+                out.add(mapper.readValue(line, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {
+                }));
+            }
+        }
+        return out;
+    }
+
+    /** UInt64 在 JSONEachRow 里是字符串、普通整数是数字，两种都要能读。 */
+    public static long longOf(Object value) {
+        if (value instanceof Number n) {
+            return n.longValue();
+        }
+        return value == null ? 0L : Long.parseLong(value.toString().trim());
+    }
+
+    /** 库名（回传任务拼查询要用，避免把 `xsl` 抄第二份到业务代码里）。 */
+    public String database() {
+        return database;
     }
 
     private String post(String endpoint, String bodyStr) throws IOException, InterruptedException {

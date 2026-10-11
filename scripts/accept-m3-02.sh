@@ -25,6 +25,7 @@ J1="${JUMP1_DIRECT:-http://localhost:8020}"
 J2="${JUMP2_DIRECT:-http://localhost:8022}"
 TENANT=1001
 RCLI="$COMPOSE exec -T redis redis-cli"
+EVICT_CHANNEL="xsl:route:evict"   # 与 sl-common 的 RouteCacheContract.EVICT_CHANNEL 必须一致（写错这里探测就永远不通）
 RUN=$(date +%s)
 TAG="m302-$RUN"
 CODE_FILE="/tmp/m302-codes.$RUN.txt"
@@ -68,7 +69,7 @@ metric() { # metric <base-url> <指标名> [标签子串] → 数值（取不到
   local v
   # 名称后面必须紧跟 { 或空白，否则 xsl_..._created 那种派生行会被当成计数值本身
   v=$(curl -s -m 5 "$1/actuator/prometheus" \
-      | awk -v n="$2" -v l="${3:-}" '$1 ~ ("^" n "([[:space:]]|\\{)") && index($1,l)>0 {print $2; exit}')
+      | awk -v n="$2" -v l="${3:-}" '$1 ~ ("^" n "($|[[:space:]]|\\{)") && (l == "" || index($1,l)>0) {print $2; exit}')
   echo "${v:-0}"
 }
 route_version() { MY "SELECT version FROM xsl_00.link_route WHERE short_code='$1' UNION ALL SELECT version FROM xsl_01.link_route WHERE short_code='$1';" | head -1; }
@@ -131,6 +132,27 @@ set_sync() { # set_sync <true|false>：改一个环境变量就换掉定时那�
 }
 
 echo "== M3-02 outbox 补偿与缓存失效广播（run=$RUN tag=$TAG）=="
+# 前置探测：两个 jump 实例是否真能收到广播。
+# 上一轮验收里 Redis 被停过（accept-m2-13 的 H 段就是 `docker stop redis`），而订阅恢复实测要 6–18s
+# （2026-10-11 本机两次量过）——那个窗口里发广播必丢，A 段的"3s 内收敛"就成了环境问题而不是产品问题。
+# 先探测再断言：不通就一直等，最多 36s，仍不通就明确报"环境不满足"，别让它伪装成一次回归。
+num_gt() { awk -v a="$1" -v b="$2" 'BEGIN{print (a+0>b+0)?1:0}'; }
+P1=$(metric "$J1" xsl_jump_route_evict_total); P2=$(metric "$J2" xsl_jump_route_evict_total)
+probed=0
+for i in $(seq 1 12); do
+  $RCLI PUBLISH "$EVICT_CHANNEL" "m302-probe-$i" >/dev/null
+  sleep 3
+  Q1=$(metric "$J1" xsl_jump_route_evict_total); Q2=$(metric "$J2" xsl_jump_route_evict_total)
+  if [[ "$(num_gt "$Q1" "$P1")" == "1" && "$(num_gt "$Q2" "$P2")" == "1" ]]; then probed=1; break; fi
+  P1=$Q1; P2=$Q2
+done
+if [[ $probed -ne 1 ]]; then
+  echo "FATAL 两个实例收不到广播（探测 36s 未果；jump-1=$P1 jump-2=$P2）"
+  echo "      多半是 Redis 刚被停过、订阅还没回来，或 admin 侧广播链路断了。等一会儿重跑；"
+  echo "      期间正确性不受影响——新值仍在 link_route 与 L2，本地缓存在 L1 TTL（30s）后自愈（DESIGN 8.4）。"
+  exit 1
+fi
+note "前置探测通过：第 $i 次探测起两个实例都能收到广播（约 $((i*3))s）"
 # 前置：定时必须是开着的——B 节要靠它自己补。上一轮被中断时没复位就先到这里停住，别让 B 假失败。
 if [[ "$(docker exec xsl-admin-1 printenv XSL_OUTBOX_SYNC 2>/dev/null)" != "true" ]]; then
   echo "FATAL admin 容器的 XSL_OUTBOX_SYNC 不是 true（定时被上一轮验收关掉了？）"

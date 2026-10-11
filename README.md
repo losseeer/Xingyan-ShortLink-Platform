@@ -16,6 +16,9 @@
                         Caffeine→Redis→link_route 三级读，302 + 归因参数
                                       └──> Kafka shortlink-click ──> sl-consumer
                                           （不可达时落本地 WAL，恢复后重放）
+
+   （刻意不经 nginx）sl-consumer ──每 5 分钟按分钟桶回传──> sl-mock :8050「宣发平台」
+                                        batch_id + 校验和 + 幂等，落独立库 xsl_mock
 ```
 
 | 模块 | 职责 |
@@ -24,8 +27,8 @@
 | `sl-gateway` | 管理面入口：HMAC 签名、时间戳窗口、nonce 防重放、注入 `X-Tenant-Id` |
 | `sl-admin` | 链接签发与治理：短码池、准入白名单、双分片轴写入 + outbox 补偿、缓存回写与失效广播 |
 | `sl-jump` | 数据面：纯 302 跳转 + 点击事件投递（Kafka / WAL 兜底），不依赖管理面 |
-| `sl-consumer` | 事件消费：批量幂等写 ClickHouse，`GET /api/v1/stats/links/{code}` |
-| `sl-mock` | mock 购票页/宣发平台的**占位目录**（无 pom、未进 Maven reactor，M3 才建模块） |
+| `sl-consumer` | 事件消费：批量幂等写 ClickHouse，`GET /api/v1/stats/links/{code}`，每 5 分钟按分钟桶归因回传（M3-03） |
+| `sl-mock` | mock 宣发平台（M3-03 起进 reactor）：接收归因回传（验签 + 校验和 + `batch_id` 幂等 + 按桶覆盖），落独立库 `xsl_mock`；假订单接口随 M3-04 |
 | `deploy/` | `compose/`（编排、nginx、MySQL/ClickHouse 初始化、`overrides/` 压测叠加、`.env` 不入库）、`docker/`（应用镜像 Dockerfile）、`maven/`（构建 settings） |
 | `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
 | `bench/` | 压测脚本、wrk lua、`reports/` 存档（DESIGN 1.3 的数字只引用这里） |
@@ -113,6 +116,7 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test mock.ticketsales.test' | sudo tee -a 
 | `scripts/accept-m2-32.sh` | UA 特征表落库：13 条真实 UA 逐条对上 `click_event.(device_type, os)`、空值 0、聚合层 `wx_pv/douyin_pv/browser_pv` 与同一套词汇表贯通 |
 | `scripts/accept-m2-35.sh` | **M2 出口标准**：15 条 UA 重放断 target_type／响应形态／中间页内容与 `no-store`／跨维度 priority 排序／无匹配落 origin／CH 取数／跟着打到 mock 购票页／`XSL_JUMP_MODE=direct302` 回退与复位 |
 | `scripts/accept-m3-02.sh` | outbox 补偿：双实例亚秒收敛（前置断言「L1 确实是热的」）、缺行成对补齐后 404→302、落后快照回正、**旧事件重放绝不倒退**（表与缓存都验）、坏事件到上限置 2 并进积压指标、`XSL_OUTBOX_SYNC` 开关透传、整批重放的耗时与广播条数 |
+| `scripts/accept-m3-03.sh` | 归因回传：端到端闭环（平台侧四个量 == CH 明细现算值）、`batch_id` 幂等与 `times_received`、校验和篡改 400 且台账不留行、错签/越窗/越权/无签名头各自 401·403、**迟到事件覆盖旧桶值**（不是被幂等丢掉）、10 分钟窗口扫明细的 read_rows/耗时、`XSL_PUSH_ENABLED` 开关与定时真的会跑 |
 | `scripts/demo.sh` | 端到端演示（`make demo`） |
 
 ## 当前状态
@@ -135,5 +139,8 @@ M2（动态路由与防刷）进行中。**M2-00 资源预算重排 + 跳转 P99
 仍在待办：行为评分规则表（`risk_score` 已可写、`is_bot` 仍恒 0）、签发链路换工具复测、M3 的归因回传与看板三页。
 
 **M3 开工（2026-10-04）**：**M3-01 对账键已收口**——`click_event` 加了一列 `click_id`，值就是跳转 URL 上的 `xy_click_id`（订单回传带回的也是它），于是"这笔订单来自哪一次点击"在 ClickHouse 里能 join 了。老数据卷靠 `make ch-schema` 幂等补列；**历史行是空串且不回填**（那个值从来没进过统计链路，填进去就是造数据）；被频控拦下的点击也是空串（压根没生成跳转目标），两者靠 `risk_score=25` 区分。实测按 `click_id` 点查 0.3–0.5 秒、一次查 1000 个 id 0.8 秒，据此决定**不加跳数索引**。M3 后续顺序与风险见 [docs/iterations/ITER-M3.md](docs/iterations/ITER-M3.md)。
+
 **M3-02 outbox 同步器与缓存失效广播已于 2026-10-11 收口**（`scripts/accept-m3-02.sh` **62/62**）：`outbox` 从「只有写方」补齐成一条能测的补偿链路——sl-admin 的 `@Scheduled`（5s 一轮、≤500 行、`0→1`，坏事件 `retry_count++` 到上限置 `2`）+ `POST /internal/outbox/replay`（带 `?short_code=` 可定点修）。核心是**两条 version 条件写**：`UPDATE link_route … WHERE version<?`（缺行时把路由与归属索引**成对**补回）与缓存侧的 Lua `version 比较`，于是「重放整张 outbox」是安全的——实测灌 1000 条与快照同版本的事件：全部判为已被取代、`applied=0`、一行路由都没动、一条广播都没发。配置变更走 Redis `xsl:route:evict` 广播清各实例 Caffeine：封禁一条链接后两个 jump 实例都在**第一个采样点（≤100ms，采样步长 100ms）**改口 403，而旧口径只能等 30s TTL；广播是尽力而为的加速，丢消息由 TTL 自愈，正确性仍由条件写守住。
+
+**M3-03 归因回传 + mock 宣发平台已于 2026-10-11 收口**（`scripts/accept-m3-03.sh` **37/37**）：点击侧的分钟桶现在会主动推给"外部平台"——`sl-mock` 从只有 README 的占位目录变成 reactor 里的第 6 个模块（端口 8050、独立库 `xsl_mock`、**不挂 nginx 对外路由**，因为它扮演的就是外部系统）。发送端在 sl-consumer 的 `@Scheduled`（5 分钟一轮、回看 3 个已关闭分钟），事实源取 **`click_event` 明细 `FINAL`** 现算 `pv/uv/valid_pv/bot_pv`——实测 10 分钟窗口只读 6,755 行 / 263 KB / 5ms（表内 4,836 万行），所以**不给聚合表加 `valid_pv` 列**，那个"数字不可接受就换"的出口当场关闭。三件语义都有断言兜着：`batch_id` 由「窗口 + 内容 hash」算出（所以迟到变全的那一版是**覆盖**而不是被幂等丢掉）、接收端自己重算校验和与 id（篡改 `pv` → 400 且台账一颗不涨）、同 `batch_id` 重投只加 `times_received`（数值不重复计入）。`bot_pv` 恒 0、`valid_pv` 现在等于放行数——这是评分层未做的**能力边界**，口径写死在 DESIGN 6.4，式子已就位等数据变准。
 

@@ -23,6 +23,7 @@
         <module>sl-admin</module>
         <module>sl-jump</module>
         <module>sl-consumer</module>
+        <module>sl-mock</module>
     </modules>
 
     <properties>

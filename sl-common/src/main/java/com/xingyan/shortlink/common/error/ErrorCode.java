@@ -9,6 +9,7 @@ public enum ErrorCode {
     LINK_NOT_FOUND("SL-4040", "short code not found"),
     LINK_EXPIRED("SL-4101", "link expired or access limit exceeded"),
     LINK_FORBIDDEN("SL-4030", "link disabled or banned"),
+    TENANT_MISMATCH("SL-4031", "batch tenant does not match the api key"),
     URL_NOT_ALLOWED("SL-4001", "origin url rejected by admission check"),
     VALIDATION_FAILED("SL-4002", "request validation failed"),
     TENANT_QUOTA_EXCEEDED("SL-4290", "tenant quota exceeded"),

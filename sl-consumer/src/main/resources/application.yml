@@ -36,6 +36,19 @@ xsl:
     user: ${XSL_CH_USER:xsl_app}
     password: ${XSL_CH_PASSWORD}
     database: ${XSL_CH_DB:xsl}
+  push:
+    # 归因回传（DESIGN 6.3-3 / 7.3，M3-03）。endpoint 为空 = 不投递（只跑取数），本机由 compose 注入
+    # http://mock:8050/mock/attribution/batches；刻意不把 mock 写成 depends_on：外部平台不该拖住事件消费者。
+    enabled: ${XSL_PUSH_ENABLED:true}
+    interval-ms: ${XSL_PUSH_INTERVAL:300000}
+    initial-delay-ms: ${XSL_PUSH_DELAY:30000}
+    # 回看几个已关闭的分钟桶：吸收迟到点击的窗口。代价是迟到超过它的点击不进回传（写在 6.3）。
+    lookback-minutes: ${XSL_PUSH_LOOKBACK:3}
+    endpoint: ${XSL_PUSH_ENDPOINT:}
+    # 签名密钥（同时是 api key，DESIGN 9.4：本期 key 即 secret）。值来自 compose 注入，仓库不落明文
+    api-key: ${XSL_PUSH_API_KEY:}
+    tenant-id: ${XSL_PUSH_TENANT_ID:1001}
+    timeout-ms: ${XSL_PUSH_TIMEOUT_MS:5000}
 
 management:
   endpoints:

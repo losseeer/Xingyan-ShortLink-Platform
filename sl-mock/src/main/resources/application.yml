@@ -1,0 +1,32 @@
+server:
+  port: 8050
+
+spring:
+  application:
+    name: sl-mock
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 独立库 xsl_mock：这是"外部平台"的等价物，不与业务分片共库，也刻意不经 ShardingSphere。
+    url: jdbc:mysql://${XSL_MYSQL_HOST:localhost}:${XSL_MYSQL_PORT:3307}/xsl_mock?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: ${XSL_MYSQL_USER:root}
+    # 口令只从环境来（compose 从 deploy/compose/.env 注入），仓库里不落明文
+    password: ${XSL_MYSQL_PASSWORD:}
+    hikari:
+      maximum-pool-size: 4
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+
+xsl:
+  mock:
+    # 接收端只认这一把 key；它同时就是 HMAC 的 secret（DESIGN 9.4：本期 key 即 secret，
+    # key/secret 分离与轮换仍是欠着的那格）。它只能往 mock 自己的台账表里写聚合值，
+    # 摸不到任何业务数据，所以属"设计内的演示密钥"同一类，不是环境凭据。
+    api-key: ${XSL_MOCK_PUSH_KEY:xy-key-push-mock-001}
+    # 这把 key 代表的租户——信封里的 tenant_id 必须等于它，否则 403（DESIGN 7.3 ①）
+    tenant-id: ${XSL_MOCK_TENANT:1001}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

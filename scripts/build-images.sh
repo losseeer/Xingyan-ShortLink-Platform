@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # M1-10 应用镜像构建：宿主 mvn 产物 → JRE 镜像（编译刻意不进镜像层，见 deploy/docker/Dockerfile.app）。
 # 用法：
-#   scripts/build-images.sh            # 用现有 target/ 产物构建 4 个镜像
+#   scripts/build-images.sh            # 用现有 target/ 产物构建 5 个镜像
 #   scripts/build-images.sh --mvn      # 先 mvn -DskipTests package 再构建
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-0.1.0}"
 TAG="${TAG:-dev}"
-MODULES=(sl-gateway sl-admin sl-jump sl-consumer)
+MODULES=(sl-gateway sl-admin sl-jump sl-consumer sl-mock)
 
 if [[ "${1:-}" == "--mvn" ]]; then
   if [[ -z "${JAVA_HOME:-}" || ! -x "${JAVA_HOME}/bin/javac" ]]; then

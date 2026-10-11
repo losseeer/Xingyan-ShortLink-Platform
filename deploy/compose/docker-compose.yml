@@ -216,14 +216,43 @@ services:
       SERVER_PORT: "8040"
       # M2-22：并行度要在不重新构建镜像的前提下调档（A/B 三种并行度），所以走 compose 插值
       XSL_CONSUMER_CONCURRENCY: ${XSL_CONSUMER_CONCURRENCY:-4}
+      # M3-03 归因回传：mock 宣发平台在 compose 网络内的地址 + 签名用的演示 key。
+      XSL_PUSH_ENDPOINT: ${XSL_PUSH_ENDPOINT:-http://mock:8050/mock/attribution/batches}
+      XSL_PUSH_API_KEY: ${XSL_PUSH_API_KEY:-xy-key-push-mock-001}
+      XSL_PUSH_TENANT_ID: ${XSL_PUSH_TENANT_ID:-1001}
+      # 这三个也要透传，否则 yml 里的 ${XSL_PUSH_ENABLED:...} 只能看到镜像构建时的默认值，
+      # "改一个环境变量就关掉定时投递"就只存在于宿主机上（M2-33 那个假开关的同一课）。
+      XSL_PUSH_ENABLED: ${XSL_PUSH_ENABLED:-true}
+      XSL_PUSH_INTERVAL: ${XSL_PUSH_INTERVAL:-300000}
+      XSL_PUSH_LOOKBACK: ${XSL_PUSH_LOOKBACK:-3}
     ports: ["8040:8040"]
     # 依赖 kafka-init「成功退出」而不只是 kafka「健康」：topic 不存在时 spring-kafka 容器
     # 启动即抛 ConfigException 并 crash-loop（Docker 重启后必现，本机实测 consumer Restarting）。
     # 一次性容器用 service_completed_successfully 表达，正好也把 --wait 的语义对齐成"已完成"。
+    # 依赖里没有 mock：外部宣发平台挂了不该拖住事件消费者（回传是尽力而为的投递，
+    # 下一轮同内容算出同一个 batch_id 重投即可，见 DESIGN 6.3-3）。
     depends_on:
       kafka: {condition: service_healthy}
       kafka-init: {condition: service_completed_successfully}
       clickhouse: {condition: service_healthy}
+    healthcheck:
+      <<: *http-health
+
+  # mock 宣发平台（M3-03 起从占位目录变成真模块）。身份是"外部系统"：
+  # 不挂 nginx 对外路由、不经网关、独立库 xsl_mock，只从 compose 内网接收归因回传；
+  # 宿主 8050 是给验收/对账脚本取数用的。
+  mock:
+    image: xsl/mock:dev
+    mem_limit: 256m
+    restart: always
+    environment:
+      <<: *app-env
+      SERVER_PORT: "8050"
+      XSL_MOCK_PUSH_KEY: ${XSL_PUSH_API_KEY:-xy-key-push-mock-001}
+      XSL_MOCK_TENANT: ${XSL_PUSH_TENANT_ID:-1001}
+    ports: ["8050:8050"]
+    depends_on:
+      mysql: {condition: service_healthy}
     healthcheck:
       <<: *http-health
 

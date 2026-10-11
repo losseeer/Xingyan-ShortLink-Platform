@@ -5,10 +5,12 @@ import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.xingyan.shortlink.admin.pool.ShortCodePoolService;
+import com.xingyan.shortlink.admin.route.RouteCachePublisher;
 import com.xingyan.shortlink.common.admission.UrlAdmissionChecker;
 import com.xingyan.shortlink.common.error.ErrorCode;
 import com.xingyan.shortlink.common.id.SnowflakeIdGenerator;
 import com.xingyan.shortlink.common.route.RouteRule;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -89,9 +91,12 @@ class LinkServiceIntegrationTest {
         ShortCodePoolService pool = new ShortCodePoolService(redis, jdbc, NS, 200, 0.2);
         UrlAdmissionChecker checker = new UrlAdmissionChecker(Set.of("mock.ticketsales.test", ".xystage.test"));
         RouteRuleService ruleService = new RouteRuleService(jdbc, checker);
+        // 直写路径现在会把新值按 version 守卫写进 L2 并发一次失效广播（DESIGN 8.4，M3-02）；
+        // 测试里没有订阅方，广播就是一条没人收的发布，只多一个计数器。
+        RouteCachePublisher routeCache = new RouteCachePublisher(redis, new SimpleMeterRegistry());
         service = new LinkService(redis, jdbc, pool, checker,
                 new SnowflakeIdGenerator(3), new LinkTxWriter(jdbc, mapper, ruleService), mapper,
-                ruleService, "xy1.test");
+                ruleService, routeCache, "xy1.test");
     }
 
     @AfterEach

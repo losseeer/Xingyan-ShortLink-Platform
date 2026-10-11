@@ -2,7 +2,7 @@
 
 **项目名称**：星演宣发短链平台（Xingyan ShortLink Platform）
 
-**版本**：v2.10.0（v2.0 修订自初稿，v2.1 单机环境收敛，v2.1.1 修正单机/单实例混同，v2.2 确定 Vue 看板与 monorepo 代码组织，v2.2.1 随 m1 收口在 1.3 增"实测"列，v2.2.2 回填 M1-11 压测实测值含未达标项，v2.2.3 由 M2-00 修正延迟 SLO 的判定负载并回填归因，v2.3.0 防刷主线：频控第 2 层落地口径与 access_limit 对账落点，v2.4.0 M2-01 事件链批量化并改写容量上限归属，v2.5.0 动态路由引擎的实现口径（特征表自维护、能力边界、真回退开关），v2.6.0 M2-31 route_rule 双轨落地：`route_json.rules` 实际形状与六条落地口径，v2.7.0 M2-32 UA 特征表落地形状与 `device_type/os` 取值词汇表，v2.8.0 M2-33 一级决策口径（匹配语义、四类 target、中间页不可缓存、真开关的装配层），v2.9.0 M2-34 mock 购票页的回显方式与 443/自签证书前提，v2.10.0 M3-01 对账键 `click_id` 进明细表；修订记录见附录 A）
+**版本**：v2.10.0（v2.0 修订自初稿，v2.1 单机环境收敛，v2.1.1 修正单机/单实例混同，v2.2 确定 Vue 看板与 monorepo 代码组织，v2.2.1 随 m1 收口在 1.3 增"实测"列，v2.2.2 回填 M1-11 压测实测值含未达标项，v2.2.3 由 M2-00 修正延迟 SLO 的判定负载并回填归因，v2.3.0 防刷主线：频控第 2 层落地口径与 access_limit 对账落点，v2.4.0 M2-01 事件链批量化并改写容量上限归属，v2.5.0 动态路由引擎的实现口径（特征表自维护、能力边界、真回退开关），v2.6.0 M2-31 route_rule 双轨落地：`route_json.rules` 实际形状与六条落地口径，v2.7.0 M2-32 UA 特征表落地形状与 `device_type/os` 取值词汇表，v2.8.0 M2-33 一级决策口径（匹配语义、四类 target、中间页不可缓存、真开关的装配层），v2.9.0 M2-34 mock 购票页的回显方式与 443/自签证书前提，v2.10.0 M3-01 对账键 `click_id` 进明细表，v2.11.0 M3-02 outbox 同步器落地：状态机、version 条件写（"强校验通道"的具体形态）、`xsl:route:evict` 广播与 `/internal/**` 的可达性；修订记录见附录 A）
 
 **项目性质**：个人独立项目（非企业合作项目）。全部组件按常规个人 PC（16G 内存、Docker Compose 单机）部署设计；原企业级能力（分片、多可用区、跨团队契约）保留为**设计推演**，实现上做单机化收敛并全部可本地验证（见 3.3、8.1）。
 
@@ -278,7 +278,7 @@ Xingyan-ShortLink-Platform/          # 实际仓库名（下图按 m1 收口时�
 
 **domain_pool（域名字典表，新增）**：`domain, status(可用/被举报/封禁), weight, switch_time`，支撑 9.5 抗封禁轮换。
 
-**outbox（本地事务表，随 short_link 同分片键，v2.1.1 补入——4.1/8.4 一直引用但此前漏建条目）**：`id, aggregate_type, aggregate_id(=short_code), event_type, payload_json, status(待投递/已投递/失败), retry_count, create_time`；异步任务据此同步 `link_route.route_json` 与缓存失效。
+**outbox（本地事务表，随 short_link 同分片键，v2.1.1 补入——4.1/8.4 一直引用但此前漏建条目）**：`id, aggregate_type, aggregate_id(=short_code), event_type, payload_json, status(待投递/已投递/失败), retry_count, create_time`；异步任务据此同步 `link_route.route_json` 与缓存失效。v2.11.0 起这个"异步任务"有了具体形态：sl-admin 的 `OutboxSyncService`（定时 + `POST /internal/outbox/replay` 手动触发同一轮逻辑），落地口径见 8.4。
 
 > 规则存储双轨澄清：`route_rule`（行式，管理面唯一真源，支持逐条校验/冲突检查）在保存时编译为 `link_route.route_json`（文档式，数据面唯一读取源）；两者不一致时以重编译为准，outbox 事件驱动。
 
@@ -493,9 +493,11 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 | `PUT /links/{code}/rules` | 全量替换路由规则 | rules[]（服务端校验 JSON schema + 目标域名白名单） |
 | `GET /stats/links/{code}` | 单链接统计 | from,to,granularity |
 | `GET /stats/campaigns/{id}` | 活动漏斗 | — |
-| `POST /internal/outbox/replay` | 内部：outbox 补偿 | 运维触发 |
+| `POST /internal/outbox/replay` | 内部：outbox 补偿 | —（运维触发，见下条可达性说明） |
 
 创建/更新接口全部幂等化：支持 `Idempotency-Key` 请求头（Redis 24h），防止主办方重试产生重复链接。
+
+**`/internal/**` 的可达性（v2.11.0，M3-02）**：它**刻意不在 `/api/` 前缀下**。网关只路由 `/api/**`、nginx 只路由 `/api/**`+`/s/`+`/{code}`，所以这个接口既不经租户 HMAC 也不从对外域名可达，只在 compose 网络内与 admin 的直连端口上存在——"内部：运维触发"这句话由此变成拓扑事实而不是命名约定。它跑的是与定时任务同一份逻辑（带 `?short_code=xxx` 只补那一条链接：扫描按 `id` 升序，大批积压时新事件排在队尾，运维等不起），而 8.4 的 version 条件写保证**多跑不错、跑不坏**（重放只会补齐路由表与缓存、不可能写回旧值），因此不再为它单独造一套凭据。
 
 ### 7.3 外部契约
 
@@ -559,7 +561,9 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 ### 8.4 一致性与幂等（新增）
 
 - **元数据 → 路由表**：`short_link`、`link_route` 同库同分片键不同时，采用事务内写主表 + outbox 表，异步同步路由表 + 失效缓存；`version` 单调递增，缓存回写用 Lua `version 比较` 防旧值覆盖新值。
+  v2.11.0 落点细化（M3-02）：同步器是 **sl-admin** 里的 `@Scheduled` 任务（默认 5s 一轮、每轮 ≤500 行、按 `id` 升序；`xsl.outbox-sync.*` 可调），状态机 `0 待投递 → 1 已投递`，抛异常则留在 0 并 `retry_count++`，超阈值（默认 10）置 `2 失败` 并**停止自动重试**——一条坏 payload 不该每轮都吃掉一次批次。"异步同步路由表"落到两条**条件写**上：`UPDATE link_route SET route_json=?, version=? WHERE short_code=? AND version<?`；0 行受影响时要分辨两种情形——这一行**不存在**（补插，并一并补上同批失败的归属索引行 `code_tenant_index`：只补路由会得到一条"跳转能 302、管理面按码查归属却 404"的链接）还是**已有更高 version**（置 1 即"被更新的事件取代"，重试无意义）。缓存这一侧写的是**当时最权威的那一份**：前两种情形用事件里的快照，被取代时用表里那份更高的去修缓存。反过来说就是任何情况下都不拿旧事件覆盖缓存——否则会得到"路由表 v5、缓存 v4"，跳转要等缓存 24h 过期才回到 v5（这条是被活体测试逼出来的，见 ITER-M3 §4）。而**只有真的写动了缓存才发广播**：重放历史积压时绝大多数事件一行都不用改，为它们各发一条通知只会让两个 jump 实例白清一遍本地缓存。由此得到一条要拿去测的性质：**重放整张 outbox 是安全的**，老事件只会把路由表与缓存补齐，不可能把任何一侧写回旧值。
 - **缓存失效广播**：配置变更后 Redis Pub/Sub 通知各实例清 Caffeine（接受 30s 收敛窗口，紧急封禁走 `version` 强校验通道立即失效）。jump 默认 ×2 实例，跨实例收敛时间在单机即可实测（改配置 → 两实例分别命中新值的时差）。
+  v2.11.0 落点细化（M3-02）：通道 `xsl:route:evict`，载荷就是短码字符串（订阅方只做一件事，不必传 JSON）；发布点在管理面每次写完 `link_route` 与缓存之后（**直写路径与同步器路径都发**），jump×2 各起一个订阅容器、收到即 `invalidate(code)` 清 L1。广播**不进正确性链路**：Redis 重启或订阅瞬断会丢消息，此时由 L1 的 30s TTL 自愈；"立即失效"成立的前提是上面那两条条件写先把 `link_route` 与 L2 改对，广播只负责让两个实例把本地那层扔掉。收敛时间做成 `scripts/accept-m3-02.sh` 的实测项（断言"两实例都在 2s 内命中新值"——只有 30s TTL 的旧实现下这条必红，所以它自带对照）。
 - **access_limit 计数**：Redis Lua 扣减为权威，每分钟对账回写 MySQL 快照；Redis 灾难重建以快照 + 保守缓冲恢复（宁可少放不可超放）。
   v2.3.0 落点细化：快照列在 **`link_route`**（`access_used` / `access_used_at`，与 `short_code` 同分片轴，jump 本就读这张表）而不是 `short_link`（按 `tenant_id` 分片，jump 的 ShardingSphere 配置里没有该表）；对账任务放**管理面 sl-admin** 的 `@Scheduled`（它已有 MySQL 写权与 Redis 读，数据面继续保持"只写 Redis、不写业务表"）；jump 只在 `sl:cnt:{code}` 缺失这一条冷路径上读快照并以其为初值 seed，重建公式 `剩余 = access_limit − 快照已用 − 保守缓冲`。快照独立成列、不进 `route_json`，因此不触碰缓存 `version` 语义（否则每分钟一次的写会让 L1/L2 缓存反复失效）。
 - **事件幂等**：`event_id`（点击级 UUID）+ ClickHouse ReplacingMergeTree 去重，Kafka at-least-once。
@@ -567,7 +571,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 ### 8.5 可观测性（新增）
 
 - Metrics：跳转 QPS/延迟分位/缓存命中率/频控拦截数/bot 比例/池水位/outbox 积压/Kafka lag，Prometheus + Grafana（compose 可选 profile，见 3.3）；告警以 cron 脚本查PromQL 阈值等价实现（单机无 Alertmanager 必要）。核心 5 项：跳转错误率、命中率 < 97%、Kafka lag、池水位 < 20%、WAL 积压。
-- **数据面现有指标（M2-36 按实现核对，命名即验收口径）**：`xsl_jump_requests_total{outcome}`、`xsl_jump_route_lookup_total{level=local|redis|db|miss}`、`xsl_jump_rate_limit_total{result,mode}`、`xsl_jump_access_counter_total{result=rebuild|degraded_allow}`、`xsl_jump_clickevent_total{result=sent|wal|build_error}`、`xsl_jump_wal_replayed_total`/`xsl_jump_wal_replay_failed_total`/`xsl_jump_wal_backlog_bytes`、`xsl_jump_route_target_total{kind=h5|app_scheme|wx_urllink|intermediate}`（M2-33，一级决策命中分布）、`xsl_jump_route_rule_unusable_total{type}`（命中了但目标残缺/时间窗串形不对——这类"静默跳过"必须可数）；管理面 `xsl_quota_reconcile_total`，消费者 `xsl_consumer_ch_posts_total{result}`/`xsl_consumer_ch_rows_total`/`xsl_consumer_ch_post_seconds`。
+- **数据面现有指标（M2-36 按实现核对，命名即验收口径）**：`xsl_jump_requests_total{outcome}`、`xsl_jump_route_lookup_total{level=local|redis|db|miss}`、`xsl_jump_rate_limit_total{result,mode}`、`xsl_jump_access_counter_total{result=rebuild|degraded_allow}`、`xsl_jump_clickevent_total{result=sent|wal|build_error}`、`xsl_jump_wal_replayed_total`/`xsl_jump_wal_replay_failed_total`/`xsl_jump_wal_backlog_bytes`、`xsl_jump_route_target_total{kind=h5|app_scheme|wx_urllink|intermediate}`（M2-33，一级决策命中分布）、`xsl_jump_route_rule_unusable_total{type}`（命中了但目标残缺/时间窗串形不对——这类"静默跳过"必须可数）、`xsl_jump_route_evict_total`（M3-02，收到多少次缓存失效广播：它是"亚秒收敛"到底有没有在跑的旁证，与 `accept-m3-02` 的时差实测对照看）；管理面 `xsl_quota_reconcile_total`、`xsl_outbox_sync_total{result=applied|inserted|superseded|failed}`、`xsl_outbox_backlog{status=0|2}`（积压行数，即 8.5 开头那句"outbox 积压"指标的具体落点）、`xsl_outbox_backlog_age_seconds`（最老待投递事件的年龄——行数不涨但年龄持续涨，说明同一批事件在反复失败）；缓存这一侧 `xsl_route_cache_write_total{result=written|kept}`（`kept`=被 version 守卫挡下、因而**没有**发广播）与 `xsl_route_evict_total{result=sent|error}`（广播发送成/败，见 8.4 那句"写动了才广播"），消费者 `xsl_consumer_ch_posts_total{result}`/`xsl_consumer_ch_rows_total`/`xsl_consumer_ch_post_seconds`。
 - Tracing：`trace_id` 随事件消息走（内部日志贯通用），**不落 ClickHouse**；对账用的对外键是 `click_id`（= URL 上的 `xy_click_id`），M3-01 起进明细表。刻意只落一列：`trace_id` 没有对外语义，落库等于多养一份没人查的口径。
 - 日志：数据面采样日志（1%）+ 风控命中全量；跳转路径**不打印完整 origin_url 与明文 IP**（脱敏）。
 
@@ -690,6 +694,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 | （v2.8.0，M2-33 一级决策）6.2 里"中间页 HTML 本身可缓存 CDN"，以及"跳转服务读取 route_rule"两条与实现冲突 | 中间页带着**这一次点击**的 `xy_click_id` 与归因参数，可缓存就等于把 A 的 click_id 发给 B——归因静默作废；而数据面读的是编译产物快照，`route_rule` 它压根查不到。另外实现时发现"首条生效"如果按数组顺序判，快照乱序（M3 补偿、手工修数据、校验器上线前的旧行）会让某条规则永远轮不到，且不报错 | 缓存那条改为 **`Cache-Control: no-store`**（并把二级降级那句同步改掉）；新增"一级决策的落地口径"八条：匹配语义（含 geo 恒不匹配、time_window 含首尾、不认识的维度不匹配）、`unknown` 可被 `eq` 显式命中、四类 target → 响应形态映射、中间页 no-store 且每个值按落点语境转义两次、归因只拼一次且页内复用、开关落在 `JumpResolver` 层但两个实现共用抽象链、无规则时与 direct302 逐字节同形、`UrlLinkProvider` 只有 mock。数据面改为按 priority 排序后再取首条命中 |
 | （v2.9.0，M2-34 mock 购票页）6.2 说"mock 购票页回显 query/fragment"，读者会以为 nginx 能把 fragment 也印出来；同时"302 终点变成可看点"这句话没有写清它依赖什么 | fragment（`#…`）只留在浏览器里，压根不发到服务端，服务端回显它是做不到的；而终点是 `https://mock.ticketsales.test/…`（9.2 强制 https），本栈只有 :80、`.test` 又不可解析 ⇒ 不加 443 与本地自签证书，那句"可看"就是空的 | 6.2 增"回显 mechanics 与可看点的前提"一条：页面用 JS 读 `location.search`/`location.hash`；`make tls` 幂等生成 `deploy/compose/tls/`（不入库）并挂成 `up` 的前置（目录缺失时 Docker 会建成空目录，nginx 只在容器日志里报 cannot load certificate）；未登记 Host 在 443 上同样按 9.5 的白名单语义掐断。`make demo` 新增 4b 段，跟着 302 真打一次终点并把输出固化成演示的一部分 |
 | （v2.10.0，M3-01 对账键）4.2 的 `click_event` 字段表里没有 `click_id`，而附录 B 早已把 `click_id` 定为订单落库字段之一 | 点击侧从来没把这个值发给过统计库（URL 上有、消息体里没有），所以"订单 ↔ 点击"在设计里成立、在数据里做不到——而 M3 的转化率与端到端对账都建立在它上面 | 4.2 补 `click_id` 一行并写清两个空串含义（历史行 / 被拦击，后者用 `risk_score` 区分）；6.4 与 8.5 从"缺口"改成"已补 + 边界"；`trace_id` 明确不落库（只留一列对外键）。排序键不动（它是 ReplacingMergeTree 的去重依据），跳数索引等实测点查耗时出来再决定；历史行不回填 |
+| （v2.11.0，M3-02 outbox 同步器）8.4 从 v2.0 起就用完成态写着"事务内写主表 + outbox 表，**异步同步**路由表 + **失效缓存**"，代码里这三件事一件都没有：outbox 只有三处 INSERT、零读方，`xsl:route:evict` 这类广播通道不存在，"version 强校验通道"只有 jump 回源那半个 Lua | 创建/更新时管理面是**直写** `link_route` 与缓存的，直写成功时看不出缺口，所以 M1-06 收口的验收脚本全绿而补偿链路是空的；`LinkService` 的注释一直老实写着"待 M3 补偿重放"，但 8.4 没有对应的"待"字 | 把两句话拆成可实施的口径（8.4 两条各加一段落点细化）：同步器在 sl-admin（5s 一轮 / ≤500 行 / `0→1`，失败 `retry_count++` 超阈置 `2` 并停自动重试）；"同步路由表"= **两条条件写**（`WHERE version<?`，0 行受影响时分辨"缺行→补插（路由与归属索引成对补）"与"已被取代→置 1"，而缓存永远写当时最权威的那一份）——这一步顺带给出一个可测性质：**重放整张 outbox 安全**，不可能把路由表或缓存写回旧值；"失效缓存"= Pub/Sub 广播清 L1，且**明确它不进正确性链路**（丢消息由 L1 的 30s TTL 自愈，正确性靠条件写先把 `link_route` 与 L2 改对）。7.2 补 `/internal/**` 的拓扑可达性（不经 nginx、不经租户 HMAC，所以不需要再造一套凭据），8.5 补 `xsl_outbox_*` 与 `xsl_jump_route_evict_total` 并把"outbox 积压"这句话落到实处 |
 
 ## 附录 B：归因字段契约（与星演购票页/宣发平台对齐）
 

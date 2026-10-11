@@ -3,6 +3,7 @@ package com.xingyan.shortlink.jump.route;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.xingyan.shortlink.common.route.RouteCacheContract;
 import com.xingyan.shortlink.common.route.RouteConfig;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -31,17 +32,8 @@ public class RouteRepository {
     private static final Duration NULL_MARK_TTL = Duration.ofMinutes(5);
     private static final Duration REDIS_TTL_BASE = Duration.ofHours(24);
 
-    private static final RedisScript<Long> WRITE_BACK_IF_NEWER = new DefaultRedisScript<>("""
-            local cur = redis.call('GET', KEYS[1])
-            if cur then
-              local ok, obj = pcall(cjson.decode, cur)
-              if ok and obj and tonumber(obj.version) and tonumber(obj.version) >= tonumber(ARGV[2]) then
-                return 0
-              end
-            end
-            redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[3]))
-            return 1
-            """, Long.class);
+    private static final RedisScript<Long> WRITE_BACK_IF_NEWER =
+            new DefaultRedisScript<>(RouteCacheContract.SET_IF_NEWER_LUA, Long.class);
 
     private final StringRedisTemplate redis;
     private final JdbcTemplate jdbc;
@@ -51,6 +43,7 @@ public class RouteRepository {
     private final Counter hitRedis;
     private final Counter hitDb;
     private final Counter missNull;
+    private final Counter evicted;
 
     public RouteRepository(StringRedisTemplate redis,
                            JdbcTemplate jdbc,
@@ -67,7 +60,21 @@ public class RouteRepository {
         this.hitRedis = registry.counter("xsl_jump_route_lookup_total", "level", "redis");
         this.hitDb = registry.counter("xsl_jump_route_lookup_total", "level", "db");
         this.missNull = registry.counter("xsl_jump_route_lookup_total", "level", "miss");
+        this.evicted = registry.counter("xsl_jump_route_evict_total");
         registry.gauge("xsl_jump_route_l1_size", local, Cache::estimatedSize);
+    }
+
+    /**
+     * 收到失效广播后丢掉本地那一份（DESIGN 8.4，M3-02）。刻意<b>不</b>顺手删 L2：管理面发布前已经把
+     * 新值写进 {@code sl:r:{code}}，这里再删一次只会把两个 jump 实例同时打回 DB 回源（自己造一次回源风暴）。
+     * 计数留在这里，是为了让"亚秒收敛"有旁证可查——广播一条都没收到时，指标会诚实地一直不涨。
+     */
+    public void evictLocal(String code) {
+        if (code == null || code.isBlank()) {
+            return;
+        }
+        local.invalidate(code.trim());
+        evicted.increment();
     }
 
     public Optional<RouteConfig> find(String code) {

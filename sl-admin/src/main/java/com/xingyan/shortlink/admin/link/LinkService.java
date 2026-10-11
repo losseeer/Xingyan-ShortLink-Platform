@@ -3,6 +3,7 @@ package com.xingyan.shortlink.admin.link;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xingyan.shortlink.admin.pool.ShortCodePoolService;
+import com.xingyan.shortlink.admin.route.RouteCachePublisher;
 import com.xingyan.shortlink.common.route.RouteConfig;
 import com.xingyan.shortlink.common.route.RouteRule;
 import com.xingyan.shortlink.common.admission.UrlAdmissionChecker;
@@ -16,9 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-import java.security.SecureRandom;
 import java.sql.Timestamp;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,7 +30,7 @@ import java.util.regex.Pattern;
  * 短链生成/查询/更新（DESIGN 5.1、7.2、8.4、6.4 越权防护）。
  * 一致性口径：short_link+outbox 同一本地事务（同 tenant_id 分片，见 LinkTxWriter）；
  * link_route+code_tenant_index 按 short_code 分片轴，主事务提交后同步补写，
- * 失败留 outbox(status=0) 待 M3 补偿重放。
+ * 失败留 outbox(status=0) 由 {@code OutboxSyncService} 补偿重放（DESIGN 8.4，M3-02）。
  * 短码唯一性：Redis SETNX 第一道防线 + code_tenant_index/link_route 主键兜底。
  */
 @Service
@@ -41,7 +40,8 @@ public class LinkService {
     private static final Pattern CODE_PATTERN = Pattern.compile("^[0-9a-zA-Z]{4,12}$");
     private static final Set<String> RESERVED_WORDS =
             Set.of("api", "admin", "s", "health", "static", "login", "logout", "internal", "stats", "metrics", "assets", "www", "favicon");
-    private static final Duration CACHE_BASE_TTL = Duration.ofHours(24);
+    /** 创建时的路由版本：{@code link_route} 的 INSERT 与缓存回写都取它，两处必须一致。 */
+    private static final long INITIAL_ROUTE_VERSION = 1;
     private static final int MAX_CODE_RETRIES = 3;
 
     private final StringRedisTemplate redis;
@@ -53,7 +53,7 @@ public class LinkService {
     private final ObjectMapper mapper;
     private final String baseDomain;
     private final RouteRuleService ruleService;
-    private final SecureRandom random = new SecureRandom();
+    private final RouteCachePublisher routeCache;
 
     public LinkService(StringRedisTemplate redis,
                        JdbcTemplate jdbc,
@@ -63,6 +63,7 @@ public class LinkService {
                        LinkTxWriter txWriter,
                        ObjectMapper mapper,
                        RouteRuleService ruleService,
+                       RouteCachePublisher routeCache,
                        @Value("${xsl.link.base-domain:xy1.test}") String baseDomain) {
         this.redis = redis;
         this.jdbc = jdbc;
@@ -72,6 +73,7 @@ public class LinkService {
         this.txWriter = txWriter;
         this.mapper = mapper;
         this.ruleService = ruleService;
+        this.routeCache = routeCache;
         this.baseDomain = baseDomain;
     }
 
@@ -118,7 +120,7 @@ public class LinkService {
         }
         try {
             insertRouteAndIndex(code, tenantId, routeJson);
-            cacheRoute(code, routeJson);
+            routeCache.publish(code, routeJson, INITIAL_ROUTE_VERSION);
             consumeFromPool(code);
         } catch (RuntimeException e) {
             // 主事务已提交：路由/索引同步失败留 outbox(status=0) 待补偿；M1 如实上抛
@@ -193,7 +195,7 @@ public class LinkService {
         txWriter.updateCommitted(tenantId, code, expireTime, accessLimit, status, rateLimit, routeJson);
         jdbc.update("UPDATE link_route SET route_json = CAST(? AS JSON), version = ? WHERE short_code = ?",
                 routeJson, version, code);
-        cacheRoute(code, routeJson);
+        routeCache.publish(code, routeJson, version);
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("short_code", code);
@@ -230,7 +232,7 @@ public class LinkService {
         txWriter.rulesReplaced(tenantId, code, compiled, routeJson);
         jdbc.update("UPDATE link_route SET route_json = CAST(? AS JSON), version = ? WHERE short_code = ?",
                 routeJson, version, code);
-        cacheRoute(code, routeJson);
+        routeCache.publish(code, routeJson, version);
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("short_code", code);
@@ -293,14 +295,9 @@ public class LinkService {
 
     /** route+index 同 short_code 分片轴：同库单次往返序列完成 */
     private void insertRouteAndIndex(String code, long tenantId, String routeJson) {
-        jdbc.update("INSERT INTO link_route (short_code, route_json, version) VALUES (?, CAST(? AS JSON), 1)",
-                code, routeJson);
+        jdbc.update("INSERT INTO link_route (short_code, route_json, version) VALUES (?, CAST(? AS JSON), ?)",
+                code, routeJson, INITIAL_ROUTE_VERSION);
         jdbc.update("INSERT INTO code_tenant_index (short_code, tenant_id) VALUES (?, ?)", code, tenantId);
-    }
-
-    private void cacheRoute(String code, String routeJson) {
-        Duration ttl = CACHE_BASE_TTL.plusMinutes(random.nextInt(120));
-        redis.opsForValue().set("sl:r:" + code, routeJson, ttl);
     }
 
     private void consumeFromPool(String code) {

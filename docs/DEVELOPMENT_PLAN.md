@@ -91,10 +91,23 @@ M2-36 收口时查出一条**前置缺口**：`click_event` 明细表里没有 `
 | # | 任务 | 内容与交付物 | 验收动作 | 依赖 | 估时 |
 |---|---|---|---|---|---|
 | M3-01 | **点击 ↔ 订单的对账键** | `click_event` 增 `click_id` 列（值就是跳转 URL 上的 `xy_click_id`，订单侧带的也是它）；`ClickEvent` 消息体加同名字段；jump 把归因拼接产出的 clickId 放进事件（**被频控拦下的点击没有跳转目标 → 留空串**，理由写进注释与设计）；consumer 落库；老数据卷用幂等 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 补列 | ① `accept-m1-09` 新增断言：**同一次点击**的 Location 里 `xy_click_id=` 的值，等于 ClickHouse 里那条事件的 `click_id`；② 历史行 `click_id=''` 可数出来（不假装能回填）；③ 改契约必重跑：`make verify` + `accept-m1-09/07` + `accept-m2-32/35`；④ 实测一次"按 click_id 点查"的耗时并写进 ITER §3——**是否要加跳数索引由这个数决定**，不凭感觉加 | M2-36 | 0.5 天 |
+| M3-02 | **outbox 同步器 + `version` 强校验通道** | sl-admin 侧 `@Scheduled` 同步器：读 `outbox` 的 `status=0`，把 payload 里的 `route_json` 按 version 守卫应用到 `link_route` 并回写 Redis 缓存，成功置 1、失败 `retry_count++` 超阈置 2；Redis Pub/Sub 失效广播让 jump×2 清掉本地缓存；`POST /internal/outbox/replay` 手动触发同一轮逻辑；积压与最老积压年龄进指标。落地口径五条见下方"M3-02 的落地口径" | `scripts/accept-m3-02.sh` 五组断言（缺行补齐后 404→302、落后 version 回正、重放整批不倒退、连打两次幂等、双实例亚秒收敛）+ 契约回归重跑 | M3-01 | 1.5 天 |
 
-**本项明确不做（以及做完后的结论）**：不改 `click_event` 的排序键（`(short_code, click_time, event_id)` 是 ReplacingMergeTree 去重依据，动了等于换幂等语义）；**不加跳数索引**——2026-10-04 实测：点查一个不存在的 `click_id` 0.305／0.499s（扫 48,358,068 行、读 435 MB），一次 `IN` 1000 个 id 0.813s，而加索引要为 4.33 GiB 历史 parts 做 `MATERIALIZE`，代价大于收益（数字与命令见 ITER-M3 §3/§5）；**不回填历史行的 click_id**（那个值从来没进过消息体，回填=编造数据）；订单回传接口本身属 M3-03，不在这一项里顺手做。
+**M3-01 明确不做（以及做完后的结论）**：不改 `click_event` 的排序键（`(short_code, click_time, event_id)` 是 ReplacingMergeTree 去重依据，动了等于换幂等语义）；**不加跳数索引**——2026-10-04 实测：点查一个不存在的 `click_id` 0.305／0.499s（扫 48,358,068 行、读 435 MB），一次 `IN` 1000 个 id 0.813s，而加索引要为 4.33 GiB 历史 parts 做 `MATERIALIZE`，代价大于收益（数字与命令见 ITER-M3 §3/§5）；**不回填历史行的 click_id**（那个值从来没进过消息体，回填=编造数据）；订单回传接口本身属 M3-03，不在这一项里顺手做。
 
 **M3-01 已收口（2026-10-04）**：`make verify` 全仓 125 测 0 失败；`accept-m1-09` 16/16（新增两断言：URL 上的 `xy_click_id` 与 CH 里那行的 `click_id` 是同一个串）、`accept-m2-13` 17→19/19（被拦击 `click_id` 为空串、放行点击必带值）；契约回归七套全绿含 `accept-m2-35` 87/87。
+
+**M3-02 的落地口径（写代码之前定下来，DESIGN 8.4 同步细化）**——摸底结论先摆出来：`outbox` 自 M1-06 起有三处 INSERT（`LINK_CREATED`／`LINK_UPDATED`×2）**但零读方**，`link_route` 与缓存全靠管理面直写；直写一旦失败只留一行 error 日志，最坏的一种是创建时 `insertRouteAndIndex` 失败 → **`link_route` 根本没有这一行 → 这条短链永久 404**，而主表 `short_link` 里它活得好好的。下面五条把"补偿"从一句话变成能测的东西：
+
+1. **谁跑、多久**：`@Scheduled` 放 **sl-admin**（与 M2-12 的配额对账同一侧：管理面已有 MySQL 写权与 Redis 读写，数据面继续保持"只写 Redis、不写业务表"）。默认 5s 一轮、每轮最多 500 行（上限放宽到 5000 是为了首次上线那一趟：本机历史积压实测 7,955 行全是 `status=0`，一轮 200 行会把新事件压在队尾）、按 `id` 升序；`xsl.outbox-sync.*` 可调（interval / batch / max-retry / enabled）。
+2. **状态机**：`0 待投递 → 1 已投递`；抛异常则 `retry_count++` 并**留在 0**（下一轮自然重试），`retry_count ≥ max-retry`（默认 10）置 `2 失败` 并计指标——2 是"要人看"的终态，不再自动重试，避免一条坏 payload 永久占住一轮批次。
+3. **`version` 强校验通道 = 同批条件写，不另造机制**：`UPDATE link_route SET route_json=?, version=? WHERE short_code=? AND version<?`，**0 行受影响时先看这一行在不在**——不在就补插，而且是**成对补**：`code_tenant_index` 与 `link_route` 是同一段代码写进去的，只补路由会得到一条「跳转能 302、管理面按码查归属却 404」的链接（这正是上面那条最坏情况），在且 version 不低于 payload 就是"已被更新的事件取代"，直接置 1 而不是重试。Redis 侧沿用 jump 回源那套 Lua `version 比较`，并且**缓存永远写当时最权威的那一份**（事件被取代时拿表里那份更高的去修缓存），任何情况下都不拿旧事件覆盖缓存——否则会得到「路由表 v5、缓存 v4」，跳转要等缓存 24h 过期才回到 v5。**只有真的写动了缓存才发广播**：重放历史积压时绝大多数事件一行都不用改，为它们各发一条通知只会让两个 jump 实例白清一遍本地缓存。紧急封禁的"立即失效"就落在这两处条件写 + 下面第 4 条的广播上。
+4. **缓存失效广播**：通道 `xsl:route:evict`，载荷就是短码字符串（订阅方只做一件事，不必传 JSON）。**发布点在管理面每次写完 `link_route`+缓存之后**（直写路径与同步器路径都发）；jump×2 各起一个订阅容器，收到就 `invalidate(code)` 清 L1。**尽力而为、不持久化**：Redis 重启或订阅瞬断会丢消息，此时正确性由 L1 的 30s TTL 兜底（DESIGN 8.4 原本就接受这个窗口），广播只是把窗口从 30s 压到亚秒。
+5. **手动补偿接口**：`POST /internal/outbox/replay` 同步跑一轮并回汇总；带 `?short_code=xxx` 时只补那一条链接（定点修，不必等整批按 id 升序扫到它——测试与验收脚本因此都是确定性的）。**刻意不放在 `/api/` 前缀下**——`/api/**` 才经 gateway 的租户 HMAC 鉴权、也只有 `/api/**`/`/s/`/`/{code}` 会被 nginx 路由，所以它天然只在内网与 admin 直连端口可达（DESIGN 7.2 那行同步注明）。它做的事与定时任务同一份逻辑，且第 3 条的 version 守卫保证**多跑不错、跑不坏**，因此不再为其单独造一套凭据。
+
+**M3-02 明确不做**：不引新依赖（不装 Kafka/Quartz/ ShedLock——单机 admin 单实例，重复调度不存在）；**不改 `outbox`/`link_route` 的分片轴**（扫描 `status=0` 会广播到 xsl_00/xsl_01 两库再归并，200 行/轮的代价实测在验收里给数字，不为此加表）；不把 `payload_json` 换成事件类层次（现在只有 `LINK_CREATED`/`LINK_UPDATED` 两种，payload 里带完整 `route_json`，同步器不需要知道事件类型语义）；不给 Pub/Sub 加持久化与重试；不动 `access_used` 快照列（它有自己的对账周期，与本项无关）；**不做 outbox 行的清理/归档**（`status=1` 的行留着当审计线索，容量属 9.6 保留期那格）。
+
+**M3-02 已收口（2026-10-11）**：`scripts/accept-m3-02.sh` **62/62**；`make verify` 全仓 **134 测 / 0 失败 / 0 跳过**（新增 9 测：补偿 5 + 缓存与广播 3 + jump 本地失效 1）；契约回归八套全绿（`m1-04` 7、`m1-06` 33、`m1-07` 15、`m1-09` 16、`m1-10` 19、`m2-13` 19、`m2-32` 19、**`m2-35` 87**）+ `make demo` 全通。实测口径见 ITER-M3 §3；两处「看起来能过、其实什么都没测到」的修复（admin 与 gateway 的 `/actuator/prometheus` 一直是 404；验收脚本被自己的管道截断后把定时开关留在了 false 上）记在 §4。
 
 **P2**：裂变批量签发、模型化反作弊、开源化（CI Badge、seed 数据脱敏、license）。
 

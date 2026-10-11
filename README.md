@@ -22,7 +22,7 @@
 |---|---|
 | `sl-common` | 归因拼接（白名单 + `xy_click_id`）、短码生成、错误码、ClickEvent DTO |
 | `sl-gateway` | 管理面入口：HMAC 签名、时间戳窗口、nonce 防重放、注入 `X-Tenant-Id` |
-| `sl-admin` | 链接签发与治理：短码池、准入白名单、双分片轴写入 + outbox、缓存同步 |
+| `sl-admin` | 链接签发与治理：短码池、准入白名单、双分片轴写入 + outbox 补偿、缓存回写与失效广播 |
 | `sl-jump` | 数据面：纯 302 跳转 + 点击事件投递（Kafka / WAL 兜底），不依赖管理面 |
 | `sl-consumer` | 事件消费：批量幂等写 ClickHouse，`GET /api/v1/stats/links/{code}` |
 | `sl-mock` | mock 购票页/宣发平台的**占位目录**（无 pom、未进 Maven reactor，M3 才建模块） |
@@ -112,7 +112,7 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test mock.ticketsales.test' | sudo tee -a 
 | `scripts/accept-m2-13.sh` | 频控：阈值内 302／越界 429、伪造 XFF 绕不过、被拦不烧配额、被拦击仍入库（M3-01 起并断其 `click_id` 为空串、放行点击必带值）、丢键后按快照收口、Redis 停机降级 |
 | `scripts/accept-m2-32.sh` | UA 特征表落库：13 条真实 UA 逐条对上 `click_event.(device_type, os)`、空值 0、聚合层 `wx_pv/douyin_pv/browser_pv` 与同一套词汇表贯通 |
 | `scripts/accept-m2-35.sh` | **M2 出口标准**：15 条 UA 重放断 target_type／响应形态／中间页内容与 `no-store`／跨维度 priority 排序／无匹配落 origin／CH 取数／跟着打到 mock 购票页／`XSL_JUMP_MODE=direct302` 回退与复位 |
-| `scripts/accept-m3-*.sh` | （M3 的验收脚本随任务补；M3-01 的凭证目前在 `accept-m1-09` 与 `accept-m2-13` 里） |
+| `scripts/accept-m3-02.sh` | outbox 补偿：双实例亚秒收敛（前置断言「L1 确实是热的」）、缺行成对补齐后 404→302、落后快照回正、**旧事件重放绝不倒退**（表与缓存都验）、坏事件到上限置 2 并进积压指标、`XSL_OUTBOX_SYNC` 开关透传、整批重放的耗时与广播条数 |
 | `scripts/demo.sh` | 端到端演示（`make demo`） |
 
 ## 当前状态
@@ -132,6 +132,8 @@ M2（动态路由与防刷）进行中。**M2-00 资源预算重排 + 跳转 P99
 - **一级决策 + 中间页 + 真开关**（M2-33）：按 priority 取首条命中，四类 target 各自决定 302 还是 200 中间页（`Cache-Control: no-store`——页里带着本次点击的 `xy_click_id`，缓存过就把 A 的 click_id 发给 B）；`xsl.jump.mode` 从注释变成条件装配，默认 `dynamic`，`XSL_JUMP_MODE=direct302 make up` 一键退回纯 302。
 - **mock 购票页**（M2-34）：302 的终点在本地真的能打开（443 + 自签证书 + hosts 一条），query 与 `#fragment` 由页内 JS 回显。
 
-仍在待办：行为评分规则表（`risk_score` 已可写、`is_bot` 仍恒 0）、签发链路换工具复测、M3 的 outbox 同步器与看板。
+仍在待办：行为评分规则表（`risk_score` 已可写、`is_bot` 仍恒 0）、签发链路换工具复测、M3 的归因回传与看板三页。
 
 **M3 开工（2026-10-04）**：**M3-01 对账键已收口**——`click_event` 加了一列 `click_id`，值就是跳转 URL 上的 `xy_click_id`（订单回传带回的也是它），于是"这笔订单来自哪一次点击"在 ClickHouse 里能 join 了。老数据卷靠 `make ch-schema` 幂等补列；**历史行是空串且不回填**（那个值从来没进过统计链路，填进去就是造数据）；被频控拦下的点击也是空串（压根没生成跳转目标），两者靠 `risk_score=25` 区分。实测按 `click_id` 点查 0.3–0.5 秒、一次查 1000 个 id 0.8 秒，据此决定**不加跳数索引**。M3 后续顺序与风险见 [docs/iterations/ITER-M3.md](docs/iterations/ITER-M3.md)。
+**M3-02 outbox 同步器与缓存失效广播已于 2026-10-11 收口**（`scripts/accept-m3-02.sh` **62/62**）：`outbox` 从「只有写方」补齐成一条能测的补偿链路——sl-admin 的 `@Scheduled`（5s 一轮、≤500 行、`0→1`，坏事件 `retry_count++` 到上限置 `2`）+ `POST /internal/outbox/replay`（带 `?short_code=` 可定点修）。核心是**两条 version 条件写**：`UPDATE link_route … WHERE version<?`（缺行时把路由与归属索引**成对**补回）与缓存侧的 Lua `version 比较`，于是「重放整张 outbox」是安全的——实测灌 1000 条与快照同版本的事件：全部判为已被取代、`applied=0`、一行路由都没动、一条广播都没发。配置变更走 Redis `xsl:route:evict` 广播清各实例 Caffeine：封禁一条链接后两个 jump 实例都在**第一个采样点（≤100ms，采样步长 100ms）**改口 403，而旧口径只能等 30s TTL；广播是尽力而为的加速，丢消息由 TTL 自愈，正确性仍由条件写守住。
+

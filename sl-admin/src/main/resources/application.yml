@@ -30,6 +30,14 @@ xsl:
     interval-ms: ${XSL_QUOTA_RECONCILE_INTERVAL:60000}
     initial-delay-ms: ${XSL_QUOTA_RECONCILE_DELAY:20000}
     chunk: ${XSL_QUOTA_RECONCILE_CHUNK:500}
+  outbox-sync:
+    # outbox → link_route + 缓存的补偿（DESIGN 8.4，M3-02）。
+    # enabled 只关定时那一半：POST /internal/outbox/replay 任何时候都能手动跑一轮。
+    enabled: ${XSL_OUTBOX_SYNC:true}
+    interval-ms: ${XSL_OUTBOX_SYNC_INTERVAL:5000}
+    initial-delay-ms: ${XSL_OUTBOX_SYNC_DELAY:10000}
+    batch: ${XSL_OUTBOX_SYNC_BATCH:500}
+    max-retry: ${XSL_OUTBOX_SYNC_MAX_RETRY:10}
 
 management:
   endpoints:

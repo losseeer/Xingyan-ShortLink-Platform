@@ -183,6 +183,33 @@ class RouteRepositoryLiveTest {
         assertEquals("2", redis.opsForValue().get("sl:cnt:" + code), "全新链接该按满额播种：3 − 1");
     }
 
+    /**
+     * M3-02 失效广播落在本实例的这一半：收到就该丢掉 L1，而不是继续等 30s TTL。
+     * 空载荷不算一次失效——否则一条脏消息会把计数器抬高，让"广播到底有没有在跑"这个旁证失真。
+     */
+    @Test
+    void evictLocalDropsCachedEntryAndIgnoresBlankPayload() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        RouteRepository repository = repo(registry);
+        String code = "m7ev" + System.nanoTime() % 100000;
+        insertRoute(code, 1);
+
+        repository.find(code);                     // 冷：回源 + 进 L1（并写回 L2）
+        repository.find(code);                     // 热：L1 命中
+        assertEquals(1.0, registry.get("xsl_jump_route_lookup_total").tag("level", "local").counter().count(),
+                "第二次查应命中 L1");
+
+        repository.evictLocal(code);
+        repository.find(code);                     // 被清过 → 只能重新读 L2
+        assertEquals(1.0, registry.get("xsl_jump_route_lookup_total").tag("level", "redis").counter().count(),
+                "失效后的下一次必须重读 L2，而不是继续吃 L1");
+        assertEquals(1.0, registry.get("xsl_jump_route_evict_total").counter().count());
+
+        repository.evictLocal("  ");
+        repository.evictLocal(null);
+        assertEquals(1.0, registry.get("xsl_jump_route_evict_total").counter().count(), "空载荷不计数");
+    }
+
     private static boolean infraUp() {
         return portOpen("127.0.0.1", 6380) && portOpen("127.0.0.1", 3307);
     }

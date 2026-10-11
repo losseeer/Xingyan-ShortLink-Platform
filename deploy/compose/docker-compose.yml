@@ -147,6 +147,10 @@ services:
     environment:
       <<: *app-env
       SERVER_PORT: "8030"
+      # outbox 补偿任务的开关要能"改一个环境变量就生效"，否则它只存在于宿主机的 java -jar 里
+      # （M2-33 那个 mode 假开关的同一课，见 ITER-M2 §4）。
+      XSL_OUTBOX_SYNC: ${XSL_OUTBOX_SYNC:-true}
+      XSL_OUTBOX_SYNC_INTERVAL: ${XSL_OUTBOX_SYNC_INTERVAL:-5000}
     ports: ["8030:8030"]
     depends_on:
       mysql: {condition: service_healthy}

@@ -6,7 +6,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -23,7 +22,6 @@ import java.util.List;
  * {@code route_json} 的字段——route_json 带 version、是缓存契约，每分钟一次的写会把 L1/L2 全部打穿。
  */
 @Component
-@EnableScheduling
 public class AccessQuotaReconciler {
 
     private static final Logger log = LoggerFactory.getLogger(AccessQuotaReconciler.class);

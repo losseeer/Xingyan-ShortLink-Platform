@@ -33,6 +33,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!-- M3-02：yml 早就 expose 了 prometheus，但没有注册器时 /actuator/prometheus 是 404
+             （consumer 在 M2-21 撞过同一课，注释也写在那里）。prometheus.yml 一直在抓 admin:8030，
+             抓不到就是"指标存在但看不见"——xsl_outbox_backlog 这类告警项必须可点达才算数。 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <!-- M1-02 spike：ShardingSphere-JDBC 分片路由验证（DESIGN 4.1） -->
         <dependency>
             <groupId>org.apache.shardingsphere</groupId>

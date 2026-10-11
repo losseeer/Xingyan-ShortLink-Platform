@@ -69,6 +69,8 @@ class ClickPipelineLiveTest {
         ClickEvent e = new ClickEvent();
         e.setEventId(eventId);
         e.setShortCode(CODE);
+        // M3-01 的对账键：跳转 URL 上的 xy_click_id，订单侧带回的就是它
+        e.setClickId("c-" + eventId);
         e.setClickTime(ts);
         e.setIpHash("hash-" + eventId);
         e.setChannelId("ch-1");
@@ -130,5 +132,11 @@ class ClickPipelineLiveTest {
 
         long count = ch.countByCode(CODE);
         assertEquals(2, count, "重复 event_id 被幂等消化，FINAL 计数恰为 2");
+
+        // 对账键必须与事件一起落库（缺这一步，M3 的订单↔点击对账就没有 join 键）
+        String landed = ch.scalar("SELECT groupArray(click_id) FROM (SELECT DISTINCT click_id FROM "
+                + "xsl.click_event FINAL WHERE short_code = '" + CODE + "')");
+        assertTrue(landed.contains("c-" + idA) && landed.contains("c-" + idB),
+                "click_id 应随事件落库，实际读到 " + landed);
     }
 }

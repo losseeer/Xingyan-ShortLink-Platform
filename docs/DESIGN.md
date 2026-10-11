@@ -2,7 +2,7 @@
 
 **项目名称**：星演宣发短链平台（Xingyan ShortLink Platform）
 
-**版本**：v2.9.0（v2.0 修订自初稿，v2.1 单机环境收敛，v2.1.1 修正单机/单实例混同，v2.2 确定 Vue 看板与 monorepo 代码组织，v2.2.1 随 m1 收口在 1.3 增"实测"列，v2.2.2 回填 M1-11 压测实测值含未达标项，v2.2.3 由 M2-00 修正延迟 SLO 的判定负载并回填归因，v2.3.0 防刷主线：频控第 2 层落地口径与 access_limit 对账落点，v2.4.0 M2-01 事件链批量化并改写容量上限归属，v2.5.0 动态路由引擎的实现口径（特征表自维护、能力边界、真回退开关），v2.6.0 M2-31 route_rule 双轨落地：`route_json.rules` 实际形状与六条落地口径，v2.7.0 M2-32 UA 特征表落地形状与 `device_type/os` 取值词汇表，v2.8.0 M2-33 一级决策口径（匹配语义、四类 target、中间页不可缓存、真开关的装配层），v2.9.0 M2-34 mock 购票页的回显方式与 443/自签证书前提；修订记录见附录 A）
+**版本**：v2.10.0（v2.0 修订自初稿，v2.1 单机环境收敛，v2.1.1 修正单机/单实例混同，v2.2 确定 Vue 看板与 monorepo 代码组织，v2.2.1 随 m1 收口在 1.3 增"实测"列，v2.2.2 回填 M1-11 压测实测值含未达标项，v2.2.3 由 M2-00 修正延迟 SLO 的判定负载并回填归因，v2.3.0 防刷主线：频控第 2 层落地口径与 access_limit 对账落点，v2.4.0 M2-01 事件链批量化并改写容量上限归属，v2.5.0 动态路由引擎的实现口径（特征表自维护、能力边界、真回退开关），v2.6.0 M2-31 route_rule 双轨落地：`route_json.rules` 实际形状与六条落地口径，v2.7.0 M2-32 UA 特征表落地形状与 `device_type/os` 取值词汇表，v2.8.0 M2-33 一级决策口径（匹配语义、四类 target、中间页不可缓存、真开关的装配层），v2.9.0 M2-34 mock 购票页的回显方式与 443/自签证书前提，v2.10.0 M3-01 对账键 `click_id` 进明细表；修订记录见附录 A）
 
 **项目性质**：个人独立项目（非企业合作项目）。全部组件按常规个人 PC（16G 内存、Docker Compose 单机）部署设计；原企业级能力（分片、多可用区、跨团队契约）保留为**设计推演**，实现上做单机化收敛并全部可本地验证（见 3.3、8.1）。
 
@@ -290,6 +290,7 @@ Xingyan-ShortLink-Platform/          # 实际仓库名（下图按 m1 收口时�
 |---|---|---|
 | event_id | String | 幂等键（Kafka 重复消费去重，ReplacingMergeTree） |
 | short_code | String | |
+| click_id | String | **对账键**（M3-01 补）：值就是跳转 URL 上的 `xy_click_id`，也是订单回传时带回的那个串，所以"这笔订单来自哪一次点击"能按它 join。空串有两类含义且不可区分地共存：① M3-01 之前的历史行（那时有这个值从没进过消息体，不回填）；② 被频控拦下的点击（压根没有跳转目标，也就没有 URL 上的 click_id）——要区分二者看 `risk_score`（后者恒为 25） |
 | click_time | DateTime | |
 | ip_hash | String | 加盐 SHA-256，盐每日轮换（PIPL，见 9.6）。IP 取 nginx 覆盖写入的 `X-Real-IP`，不用客户端可伪造的 `X-Forwarded-For` 首元素（口径同 5.3 第 2 层，v2.3.0） |
 | user_agent / referer | String | |
@@ -468,7 +469,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 - 看板查询统一走 ClickHouse（明细抽样 + 聚合表），管理面 MySQL 不参与统计查询。
 - 对外指标：PV/UV、有效点击、疑似刷量、分容器到达率、（Join 订单后）转化率。
 - 与宣发数据平台的边界：本系统只负责**点击侧**事实数据与归因参数签发；转化侧口径由宣发平台定义，`xy_click_id` 为唯一对账键。
-- **对账键现在只存在于 URL 与 Kafka 消息体里**：`click_event` 明细表没有 `xy_click_id`/`trace_id` 列（4.2/8.5 已注明），所以"分容器到达率"能算、"点击 ↔ 订单"按 click_id join 还算不了。M3 的订单回流与端到端对账第一步是给明细补这一列（先改契约，再重跑 `accept-m2-32/35`）。
+- **对账键 = `click_id`**（M3-01 落库）：点击明细、跳转 URL、订单回传三处用同一个串，"点击 ↔ 订单"因此可以 join。两条边界写清：M3-01 之前的**历史行是空串**（那个值从来没进过消息体，不回填）；**被频控拦下的点击也是空串**（没有跳转目标就没有 click_id，用 `risk_score=25` 与前者区分）。
 
 ---
 
@@ -567,7 +568,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 
 - Metrics：跳转 QPS/延迟分位/缓存命中率/频控拦截数/bot 比例/池水位/outbox 积压/Kafka lag，Prometheus + Grafana（compose 可选 profile，见 3.3）；告警以 cron 脚本查PromQL 阈值等价实现（单机无 Alertmanager 必要）。核心 5 项：跳转错误率、命中率 < 97%、Kafka lag、池水位 < 20%、WAL 积压。
 - **数据面现有指标（M2-36 按实现核对，命名即验收口径）**：`xsl_jump_requests_total{outcome}`、`xsl_jump_route_lookup_total{level=local|redis|db|miss}`、`xsl_jump_rate_limit_total{result,mode}`、`xsl_jump_access_counter_total{result=rebuild|degraded_allow}`、`xsl_jump_clickevent_total{result=sent|wal|build_error}`、`xsl_jump_wal_replayed_total`/`xsl_jump_wal_replay_failed_total`/`xsl_jump_wal_backlog_bytes`、`xsl_jump_route_target_total{kind=h5|app_scheme|wx_urllink|intermediate}`（M2-33，一级决策命中分布）、`xsl_jump_route_rule_unusable_total{type}`（命中了但目标残缺/时间窗串形不对——这类"静默跳过"必须可数）；管理面 `xsl_quota_reconcile_total`，消费者 `xsl_consumer_ch_posts_total{result}`/`xsl_consumer_ch_rows_total`/`xsl_consumer_ch_post_seconds`。
-- Tracing：跳转请求生成 `trace_id`，随 `xy_click_id` 一起进 ClickEvent（消息体里有）。**但明细表 `click_event` 目前没有 `trace_id`／`xy_click_id` 列**，consumer 也不写这两个字段，所以"点击 ↔ 订单"在 CH 里还没有可对键——端到端对账脚本的前提，M3 动手前要先补契约（ITER-M2 §6）。
+- Tracing：`trace_id` 随事件消息走（内部日志贯通用），**不落 ClickHouse**；对账用的对外键是 `click_id`（= URL 上的 `xy_click_id`），M3-01 起进明细表。刻意只落一列：`trace_id` 没有对外语义，落库等于多养一份没人查的口径。
 - 日志：数据面采样日志（1%）+ 风控命中全量；跳转路径**不打印完整 origin_url 与明文 IP**（脱敏）。
 
 ---
@@ -688,6 +689,7 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 | （v2.7.0，M2-32 UA 特征引擎）4.2 只写"device_type / os 来自 UA-Parser 库"，6.2 的容器维度初稿写成 `micromessenger`，而 CH 的 MV 字面量是 `'wechat'`/`'douyin'` | 三处共用一套词汇表却没有指定它是哪个串时，"规则命中微信"与"统计里的微信 PV"就会各用各的字符串，而 `countIf(device_type='wechat')` 在写成 `micromessenger` 之后会**静默恒为 0**（不报错、看板只是没数）；另外 UA 串本身不该当标识——它是会变的事实 | 4.2 补"取值词汇表"：`device_type`=容器 key（wechat/douyin/qq/weibo/alipay/unknown）、`os`=设备大类 key（ios/android/desktop/unknown），并把列名与语义的错位写明（改名要动 CH 迁移、历史行分类会失效，本轮不改名）；6.2 补特征表落地形状（表在 `application.yml`、代码不留默认、key 必须在枚举里否则启动即失败、顺序是语义）；UA 串（`micromessenger`/`aweme`）只作为 tokens 存在。`accept-m2-32.sh` 用 13 条真实 UA 把这三处贯通验一次 |
 | （v2.8.0，M2-33 一级决策）6.2 里"中间页 HTML 本身可缓存 CDN"，以及"跳转服务读取 route_rule"两条与实现冲突 | 中间页带着**这一次点击**的 `xy_click_id` 与归因参数，可缓存就等于把 A 的 click_id 发给 B——归因静默作废；而数据面读的是编译产物快照，`route_rule` 它压根查不到。另外实现时发现"首条生效"如果按数组顺序判，快照乱序（M3 补偿、手工修数据、校验器上线前的旧行）会让某条规则永远轮不到，且不报错 | 缓存那条改为 **`Cache-Control: no-store`**（并把二级降级那句同步改掉）；新增"一级决策的落地口径"八条：匹配语义（含 geo 恒不匹配、time_window 含首尾、不认识的维度不匹配）、`unknown` 可被 `eq` 显式命中、四类 target → 响应形态映射、中间页 no-store 且每个值按落点语境转义两次、归因只拼一次且页内复用、开关落在 `JumpResolver` 层但两个实现共用抽象链、无规则时与 direct302 逐字节同形、`UrlLinkProvider` 只有 mock。数据面改为按 priority 排序后再取首条命中 |
 | （v2.9.0，M2-34 mock 购票页）6.2 说"mock 购票页回显 query/fragment"，读者会以为 nginx 能把 fragment 也印出来；同时"302 终点变成可看点"这句话没有写清它依赖什么 | fragment（`#…`）只留在浏览器里，压根不发到服务端，服务端回显它是做不到的；而终点是 `https://mock.ticketsales.test/…`（9.2 强制 https），本栈只有 :80、`.test` 又不可解析 ⇒ 不加 443 与本地自签证书，那句"可看"就是空的 | 6.2 增"回显 mechanics 与可看点的前提"一条：页面用 JS 读 `location.search`/`location.hash`；`make tls` 幂等生成 `deploy/compose/tls/`（不入库）并挂成 `up` 的前置（目录缺失时 Docker 会建成空目录，nginx 只在容器日志里报 cannot load certificate）；未登记 Host 在 443 上同样按 9.5 的白名单语义掐断。`make demo` 新增 4b 段，跟着 302 真打一次终点并把输出固化成演示的一部分 |
+| （v2.10.0，M3-01 对账键）4.2 的 `click_event` 字段表里没有 `click_id`，而附录 B 早已把 `click_id` 定为订单落库字段之一 | 点击侧从来没把这个值发给过统计库（URL 上有、消息体里没有），所以"订单 ↔ 点击"在设计里成立、在数据里做不到——而 M3 的转化率与端到端对账都建立在它上面 | 4.2 补 `click_id` 一行并写清两个空串含义（历史行 / 被拦击，后者用 `risk_score` 区分）；6.4 与 8.5 从"缺口"改成"已补 + 边界"；`trace_id` 明确不落库（只留一列对外键）。排序键不动（它是 ReplacingMergeTree 的去重依据），跳数索引等实测点查耗时出来再决定；历史行不回填 |
 
 ## 附录 B：归因字段契约（与星演购票页/宣发平台对齐）
 
@@ -696,4 +698,4 @@ UA 解析库维护已知容器特征表（月度更新），未识别 UA 一律�
 
 实现落点（个人环境）：mock 购票页接收并回显归因参数、mock 订单接口落库，本地即可跑通"点击 → 订单 → 渠道漏斗"完整闭环，契约与生产形态保持一致。
 
-> **M2-35 发现的前置缺口（做端到端对账前必须先解）**：`click_event` 明细表没有 `xy_click_id` 列，consumer 也不写 `trace_id`（上面那张字段表里同样没有），所以"某一次点击"与"某一笔订单"在 CH 里**目前没有可对键**——回传闭环可以跑，对账脚本却无从 join。补齐方式二选一（给明细加 `click_id` 列 / 把 `trace_id` 落库），**先改契约、重跑 `accept-m2-32/35`，再写对账**（ITER-M2 §6）。
+> **这个对账键是怎么补上的（时间线）**：M2-35/36 收口时才发现明细表压根没有 `click_id` 列——订单回传闭环可以跑，对账脚本却无从 join。M3-01 按"先改契约、再动代码、必重跑旧验收"补成 4.2 里那一行（选 `click_id` 而不是 `trace_id`：前者才是订单侧带回的串）。历史行为空串且**不回填**（那个值从没进过消息体）。

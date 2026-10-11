@@ -13,6 +13,8 @@ public class ClickEvent {
 
     private String eventId;
     private String shortCode;
+    /** 对账键：跳转 URL 上的 xy_click_id（DESIGN 4.2/附录 B）。被频控拦下的点击没有它，留空串 */
+    private String clickId;
     /** epoch 秒，写 CH 时格式化为 DateTime */
     private long clickTime;
     private String ipHash;
@@ -36,6 +38,8 @@ public class ClickEvent {
     public void setEventId(String eventId) { this.eventId = eventId; }
     public String getShortCode() { return shortCode; }
     public void setShortCode(String shortCode) { this.shortCode = shortCode; }
+    public String getClickId() { return clickId; }
+    public void setClickId(String clickId) { this.clickId = clickId; }
     public long getClickTime() { return clickTime; }
     public void setClickTime(long clickTime) { this.clickTime = clickTime; }
     public String getIpHash() { return ipHash; }

@@ -43,6 +43,22 @@ for p in "channel_id=c-m109" "campaign_id=p-m109-$RUN" "promoter_id=pr-7" "xy_cl
 done
 [[ "$LOC" == *"#top" ]] && { echo "PASS fragment-at-tail"; ((pass++)); } || { echo "FAIL fragment-at-tail: $LOC"; ((fail++)); }
 
+# 2b) M3-01 对账键：URL 上的 xy_click_id 必须与事件里的 click_id 是同一个串
+#     （"点击 ↔ 订单"能对上的前提就是这句；只断 URL 有参数、或只断库里有列，都挡不住两边不同源）
+# 用 bash 自己的展开取这个值：
+#  - xy_click_id 是 fragment 前最后一个参数，所以要同时截掉 & 和 #（只截 & 会把 "#top" 吞进来）
+#  - 别在这里嵌 python：双引号里再套单引号字符类，那个 ' 会提前闭合字符串（本次就是这么翻车的）
+CID=${LOC##*xy_click_id=}
+CID=${CID%%[#&]*}
+if [[ -n "$CID" ]]; then echo "PASS click-id-extracted ($CID)"; ((pass++)); else echo "FAIL click-id-extracted: $LOC"; ((fail++)); fi
+LANDED=0
+for _ in $(seq 25); do
+  LANDED=$(ch "SELECT count() FROM xsl.click_event FINAL WHERE short_code='$CODE' AND click_id='$CID'")
+  [[ "$LANDED" == "1" ]] && break
+  sleep 1
+done
+check "click-id-landed-in-clickhouse" 1 "$LANDED"
+
 # 3) utm 透传（白名单内、非白名单丢弃）
 LOC2=$(curl -s -o /dev/null -w '%{redirect_url}' "$JUMP/s/$CODE?utm_source=douyin&evil=1")
 [[ "$LOC2" == *"utm_source=douyin"* && "$LOC2" != *"evil"* ]] && { echo "PASS utm-passthrough"; ((pass++)); } || { echo "FAIL utm-passthrough: $LOC2"; ((fail++)); }

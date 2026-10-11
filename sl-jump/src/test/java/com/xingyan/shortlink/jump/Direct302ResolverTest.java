@@ -165,7 +165,13 @@ class Direct302ResolverTest {
         when(routes.find("rl00002")).thenReturn(Optional.of(rc(0, null, null)));
         block(12);
         assertEquals(HttpStatus.TOO_MANY_REQUESTS, resolver.resolve("rl00002", null).status());
-        verify(kafka, times(1)).send(any(ProducerRecord.class));
+        var cap = org.mockito.ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(kafka).send(cap.capture());
+        String ev = String.valueOf(cap.getValue().value());
+        assertTrue(ev.contains("\"risk_score\":25"), ev);
+        // 被拦的点击压根没生成跳转目标，也就没有 xy_click_id —— 空串，不是现场编一个
+        // （编出来的 id 会让对账以为"这一击到过落地页"）
+        assertTrue(ev.contains("\"click_id\":\"\""), ev);
     }
 
     /** 链接级阈值必须原样传给频控（全局阈值对推给十万人的链接会误伤正常流量）。 */
@@ -196,6 +202,8 @@ class Direct302ResolverTest {
         String identified = String.valueOf(captor.getAllValues().get(0).value());
         assertTrue(identified.contains("\"device_type\":\"wechat\""), identified);
         assertTrue(identified.contains("\"os\":\"ios\""), identified);
+        // M3-01：正常跳转的点击必须带对账键（值就是 Location 上的 xy_click_id）
+        assertTrue(identified.contains("\"click_id\":\"c"), identified);
         String noUa = String.valueOf(captor.getAllValues().get(1).value());
         assertTrue(noUa.contains("\"device_type\":\"unknown\""), noUa);
         assertTrue(noUa.contains("\"os\":\"unknown\""), noUa);

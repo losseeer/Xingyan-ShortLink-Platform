@@ -112,7 +112,12 @@ public class ClickHouseWriter {
     public long countByCode(String shortCode) throws IOException, InterruptedException {
         String sql = "SELECT count() FROM " + database + ".click_event FINAL WHERE short_code = '"
                 + shortCode.replace("'", "") + "'";
-        return Long.parseLong(post(url, sql).trim());
+        return Long.parseLong(scalar(sql));
+    }
+
+    /** 单值读（自证与运维用，和 countByCode 同一条认证/超时路径，避免测试里再拼一份 HTTP 客户端）。 */
+    public String scalar(String sql) throws IOException, InterruptedException {
+        return post(url, sql).trim();
     }
 
     private String post(String endpoint, String bodyStr) throws IOException, InterruptedException {
@@ -139,6 +144,7 @@ public class ClickHouseWriter {
         ObjectNode n = mapper.createObjectNode();
         n.put("event_id", nz(e.getEventId()));
         n.put("short_code", nz(e.getShortCode()));
+        n.put("click_id", nz(e.getClickId()));
         n.put("click_time", CH_DT.format(Instant.ofEpochSecond(e.getClickTime())));
         n.put("ip_hash", nz(e.getIpHash()));
         n.put("user_agent", nz(e.getUserAgent()));

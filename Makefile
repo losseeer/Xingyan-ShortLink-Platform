@@ -15,7 +15,7 @@ DEVENV := deploy/compose/.env
 -include $(DEVENV)
 export XSL_MYSQL_PASSWORD XSL_CH_PASSWORD GRAFANA_PASSWORD
 
-.PHONY: print-java verify up down ps logs demo db-init seed ch-init images nginx-reload devenv tls mysql-rotate
+.PHONY: print-java verify up down ps logs demo db-init ch-schema seed ch-init images nginx-reload devenv tls mysql-rotate
 
 # 首次使用：make devenv 生成随机口令（0600），或 cp .env.example .env 后手工填
 devenv:
@@ -45,6 +45,14 @@ mysql-rotate:
 db-init:
 	@for f in deploy/compose/init/mysql/*.sql; do echo "--> $$f"; $(MYSQL_EXEC) < $$f; done
 	$(MYSQL_EXEC) -e "SELECT tenant_id, name FROM xsl_base.tenant ORDER BY tenant_id;"
+
+# ClickHouse 表结构幂等重放：镜像的 entrypoint 只在**新建卷**时跑 init 脚本，
+# 已有卷加不了列 —— 没有这一步，老卷上 consumer 写 click_id 会撞 "unknown field"（M3-01）。
+ch-schema:
+	@for f in deploy/compose/init/clickhouse/*.sql; do echo "--> $$f"; \
+	  $(COMPOSE) exec -T clickhouse clickhouse-client --multiquery < $$f || exit 1; done
+	@$(COMPOSE) exec -T clickhouse clickhouse-client --query \
+	  "SELECT name FROM system.columns WHERE database='xsl' AND table='click_event' ORDER BY position" | tr '\n' ' '; echo
 
 # 网关 HMAC 鉴权所需 api_key→tenant_id 字典（DESIGN 9.4；M3 改由 admin 变更后同步）
 seed:

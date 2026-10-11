@@ -107,11 +107,12 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test mock.ticketsales.test' | sudo tee -a 
 | `scripts/accept-m1-04.sh` | HMAC 签名/时间戳窗口/nonce 防重放/未知 key/幂等重放 |
 | `scripts/accept-m1-06.sh` | 创建链路：三表 + outbox + 缓存一致、准入 400、越权 403、自定义码冲突；M2-31 起含规则双轨契约（`rules[]` 绑定、编译序、PATCH 不清规则、空数组清空） |
 | `scripts/accept-m1-07.sh` | 跳转语义 302/404/403/410 + 冷码回源二查命中缓存（metrics 佐证）。默认形态已是 `dynamic`，无规则链接的 Location 与 M1 逐字符同形就是靠它在守住 |
-| `scripts/accept-m1-09.sh` | 1000+ 击端到端一致、Kafka pause 期间 WAL 兜底与恢复重放（丢失率首证） |
+| `scripts/accept-m1-09.sh` | 1000+ 击端到端一致、Kafka pause 期间 WAL 兜底与恢复重放（丢失率首证）；M3-01 起还断"跳转 URL 上的 `xy_click_id` == ClickHouse 里那行的 `click_id`" |
 | `scripts/accept-m1-10.sh` | 三域同一 Location、双实例承载分布、滚动重启期间 0×5xx、控制面宕机不影响跳转 |
-| `scripts/accept-m2-13.sh` | 频控：阈值内 302／越界 429、伪造 XFF 绕不过、被拦不烧配额、被拦击仍入库、丢键后按快照收口、Redis 停机降级 |
+| `scripts/accept-m2-13.sh` | 频控：阈值内 302／越界 429、伪造 XFF 绕不过、被拦不烧配额、被拦击仍入库（M3-01 起并断其 `click_id` 为空串、放行点击必带值）、丢键后按快照收口、Redis 停机降级 |
 | `scripts/accept-m2-32.sh` | UA 特征表落库：13 条真实 UA 逐条对上 `click_event.(device_type, os)`、空值 0、聚合层 `wx_pv/douyin_pv/browser_pv` 与同一套词汇表贯通 |
 | `scripts/accept-m2-35.sh` | **M2 出口标准**：15 条 UA 重放断 target_type／响应形态／中间页内容与 `no-store`／跨维度 priority 排序／无匹配落 origin／CH 取数／跟着打到 mock 购票页／`XSL_JUMP_MODE=direct302` 回退与复位 |
+| `scripts/accept-m3-*.sh` | （M3 的验收脚本随任务补；M3-01 的凭证目前在 `accept-m1-09` 与 `accept-m2-13` 里） |
 | `scripts/demo.sh` | 端到端演示（`make demo`） |
 
 ## 当前状态
@@ -131,4 +132,6 @@ M2（动态路由与防刷）进行中。**M2-00 资源预算重排 + 跳转 P99
 - **一级决策 + 中间页 + 真开关**（M2-33）：按 priority 取首条命中，四类 target 各自决定 302 还是 200 中间页（`Cache-Control: no-store`——页里带着本次点击的 `xy_click_id`，缓存过就把 A 的 click_id 发给 B）；`xsl.jump.mode` 从注释变成条件装配，默认 `dynamic`，`XSL_JUMP_MODE=direct302 make up` 一键退回纯 302。
 - **mock 购票页**（M2-34）：302 的终点在本地真的能打开（443 + 自签证书 + hosts 一条），query 与 `#fragment` 由页内 JS 回显。
 
-仍在待办：行为评分规则表（`risk_score` 已可写、`is_bot` 仍恒 0）、签发链路换工具复测、M3 的 outbox 同步器与看板。**已知前置缺口**：`click_event` 没有 `xy_click_id` 列、consumer 也不写 `trace_id`，所以"点击 ↔ 订单"在 CH 里目前没有可对键——端到端对账要先改这条契约（ITER-M2 §6）。
+仍在待办：行为评分规则表（`risk_score` 已可写、`is_bot` 仍恒 0）、签发链路换工具复测、M3 的 outbox 同步器与看板。
+
+**M3 开工（2026-10-04）**：**M3-01 对账键已收口**——`click_event` 加了一列 `click_id`，值就是跳转 URL 上的 `xy_click_id`（订单回传带回的也是它），于是"这笔订单来自哪一次点击"在 ClickHouse 里能 join 了。老数据卷靠 `make ch-schema` 幂等补列；**历史行是空串且不回填**（那个值从来没进过统计链路，填进去就是造数据）；被频控拦下的点击也是空串（压根没生成跳转目标），两者靠 `risk_score=25` 区分。实测按 `click_id` 点查 0.3–0.5 秒、一次查 1000 个 id 0.8 秒，据此决定**不加跳数索引**。M3 后续顺序与风险见 [docs/iterations/ITER-M3.md](docs/iterations/ITER-M3.md)。

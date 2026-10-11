@@ -44,7 +44,12 @@ done
 $COMPOSE exec -T redis redis-cli HSET sl:tenant:api "$API_KEY" 1001 \
   xy-key-bob-002 1002 xy-key-carol-003 1003 >/dev/null
 bash "$LIB_DIR/init-ch-user.sh" >/dev/null || { echo "ClickHouse 账号初始化失败"; exit 1; }
-echo "OK schema 可重放、xsl_app 账号就位、sl:tenant:api 已灌入"
+# ClickHouse 表结构也要重放：initdb 只在新卷跑过，老卷的列（如 M3-01 的 click_id）靠这里补上
+for f in "$REPO_ROOT"/deploy/compose/init/clickhouse/*.sql; do
+  $COMPOSE exec -T clickhouse clickhouse-client --multiquery < "$f" \
+    || { echo "ClickHouse schema 重放失败：$f"; exit 1; }
+done
+echo "OK schema 可重放（MySQL + ClickHouse）、xsl_app 账号就位、sl:tenant:api 已灌入"
 
 # 入口健康：nginx 只在启动时解析数据面 upstream 容器名，故 up 之后它就是可用的
 for _ in $(seq 15); do

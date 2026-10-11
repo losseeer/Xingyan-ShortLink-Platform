@@ -95,7 +95,9 @@ abstract class JumpChain implements JumpResolver {
         String ipHash = ClientIdentity.hash(ipSalt, ClientIdentity.ip(request));
         RateLimiter.Decision limited = rateLimiter.check(code, ipHash, rc.rateLimitPerMinute());
         if (!limited.allowed()) {
-            publish(buildEvent(code, rc, String.valueOf(idGenerator.nextId()), ipHash, request,
+            // 被拦的点击没有跳转目标，也就没有 URL 上的 xy_click_id —— click_id 留空串而不是造一个：
+            // 对账时"查不到订单"和"这一击压根没落到落地页"必须是两件事（区分方式见 DESIGN 4.2 注释）
+            publish(buildEvent(code, rc, "", String.valueOf(idGenerator.nextId()), ipHash, request,
                     uaClassifier.classify(header(request, "User-Agent")), RISK_OVER_FREQUENCY));
             return count(JumpDecision.rateLimited("访问过于频繁，请稍后再试", limited.retryAfterSeconds()));
         }
@@ -111,7 +113,7 @@ abstract class JumpChain implements JumpResolver {
                 AttributionParamMerger.merge(target.landingForAttribution(), attrs, idGenerator);
         String urlLink = target.kind() == TargetKind.WX_URLLINK
                 ? urlLinkProvider.create(target.path(), merged.url()) : null;
-        publish(buildEvent(code, rc, merged.traceId(), ipHash, request, profile, 0));
+        publish(buildEvent(code, rc, merged.clickId(), merged.traceId(), ipHash, request, profile, 0));
         return count(deliver(target, merged.url(), urlLink));
     }
 
@@ -148,11 +150,12 @@ abstract class JumpChain implements JumpResolver {
         }
     }
 
-    private ClickEvent buildEvent(String code, RouteConfig rc, String traceId, String ipHash,
+    private ClickEvent buildEvent(String code, RouteConfig rc, String clickId, String traceId, String ipHash,
                                   HttpServletRequest request, UaClassifier.Profile profile, int riskScore) {
         ClickEvent ev = new ClickEvent();
         ev.setEventId(UUID.randomUUID().toString());
         ev.setShortCode(code);
+        ev.setClickId(clickId);
         ev.setClickTime(System.currentTimeMillis() / 1000);
         ev.setIpHash(ipHash);
         ev.setUserAgent(header(request, "User-Agent"));

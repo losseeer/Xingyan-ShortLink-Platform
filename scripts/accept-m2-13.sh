@@ -150,6 +150,16 @@ check "E1 被频控拦下的点击以 risk_score=25 落库" "yes" \
 ok_in_ch=$(curl -s -m 20 -u "$CH_CRED" 'http://127.0.0.1:8123/' \
   --data-binary "SELECT count() FROM xsl.click_event FINAL WHERE short_code IN ('$CODE_A','$CODE_B') AND risk_score=0")
 note "click_event：risk_score=25 共 $got 行（脚本内拦下 $EXPECTED）、risk_score=0 共 $ok_in_ch 行（放行 $allowed）"
+# E2/E3（M3-01 对账键的两种含义）：被拦的点击压根没生成跳转目标 → click_id 必须是空串；
+# 放行出去的那些才带得上 xy_click_id。反过来（给拦下的编一个 id）会让对账以为这一击到过落地页。
+blank=$(curl -s -m 20 -u "$CH_CRED" 'http://127.0.0.1:8123/' \
+  --data-binary "SELECT count() FROM xsl.click_event FINAL WHERE short_code IN ('$CODE_A','$CODE_B') AND risk_score=25 AND click_id=''")
+check "E2 被拦击的 click_id 为空串" "yes" \
+  "$(python3 -c "import sys;print('yes' if int(sys.argv[1]) >= int(sys.argv[2]) else 'no')" "$blank" "$EXPECTED")"
+filled=$(curl -s -m 20 -u "$CH_CRED" 'http://127.0.0.1:8123/' \
+  --data-binary "SELECT count() FROM xsl.click_event FINAL WHERE short_code IN ('$CODE_A','$CODE_B') AND risk_score=0 AND click_id<>''")
+check "E3 放行的点击都带对账键" "yes" \
+  "$(python3 -c "import sys;print('yes' if int(sys.argv[1]) >= int(sys.argv[2]) else 'no')" "$filled" "$ok_in_ch")"
 
 # ================= F. 窗口滑过后恢复 =================
 WAIT=$(python3 -c "import time;print(int(60 - time.time() % 60) + 2)")

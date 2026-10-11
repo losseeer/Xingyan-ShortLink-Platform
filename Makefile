@@ -15,7 +15,7 @@ DEVENV := deploy/compose/.env
 -include $(DEVENV)
 export XSL_MYSQL_PASSWORD XSL_CH_PASSWORD GRAFANA_PASSWORD
 
-.PHONY: print-java verify up down ps logs demo db-init ch-schema seed ch-init images nginx-reload devenv tls mysql-rotate
+.PHONY: print-java verify up down ps logs demo db-init ch-schema seed ch-init images nginx-reload devenv tls mysql-rotate web console-dist
 
 # 首次使用：make devenv 生成随机口令（0600），或 cp .env.example .env 后手工填
 devenv:
@@ -68,10 +68,20 @@ verify:
 images:
 	@bash scripts/build-images.sh --mvn
 
+# 看板前端（M3-06）：npm 现场构建，产物 dist/ 不入库。
+# 没有 node_modules 就先装一次，让 `make web` 是从零可复现的一步，而不是「我本机恰好装过」。
+web:
+	cd sl-console-web && { [ -d node_modules ] || npm install --no-audit --no-fund; } && npm run build
+
+# dist 缺失时 nginx 只会对着空目录把所有路径 404，症状长得像「前端坏了」——所以做成显式前置。
+# 与 tls 同一手法（那个是证书缺失时 nginx 直接起不来，报错还落在容器日志里）。
+console-dist:
+	@test -f sl-console-web/dist/index.html || { echo "缺 sl-console-web/dist/index.html —— 先跑 make web（需要 node/npm）"; exit 1; }
+
 # tls 是 up 的前置：nginx 的 443 要挂 deploy/compose/tls/（M2-34 自签证书）。
 # 目录不存在时 Docker 会替我们 mkdir 一个空目录，nginx 随即以 "cannot load certificate" 起不来，
 # 报错还落在容器日志里而不是 Makefile 输出里——所以让它先跑脚本，而不是让人去猜。
-up: tls
+up: tls console-dist
 	$(COMPOSE) up -d --wait
 	# 重建 jump 容器会让容器 IP 变化，而数据面 upstream 是静态块（keepalive 需要稳定 DNS 名，
 	# nginx 只在启动/reload 时解析一次）——不 reload 就会对着旧 IP 打，全站 502。

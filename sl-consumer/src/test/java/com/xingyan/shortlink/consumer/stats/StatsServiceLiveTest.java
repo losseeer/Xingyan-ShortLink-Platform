@@ -212,6 +212,22 @@ class StatsServiceLiveTest {
     }
 
     @Test
+    void tenantTimeseriesIsTheOneThatCarriesBuckets() {
+        // 双指标页需要"随时间的走势"。渠道接口给不了（它 GROUP BY 的是渠道不是时间桶），
+        // 页面当初借了那条接口，结果是显示「这个窗口里没有点击」而同窗口确实有 10 击——
+        // 这条断言就是那次浏览器实测之后补的（ITER-M3 §4）
+        Map<String, Object> data = stats.tenantTimeseries(TENANT, minuteWindow());
+        assertEquals(10L, num(child(data, "totals"), "pv"));
+        List<Map<?, ?>> series = list(data, "series");
+        assertEquals(2, series.size(), "跨两分钟 ⇒ 两个桶");
+        long sum = 0;
+        for (Map<?, ?> b : series) {
+            sum += num(b, "pv");
+        }
+        assertEquals(10L, sum, "桶相加要等于汇总");
+    }
+
+    @Test
     void campaignTrendAndLinkViewAgreeOnTheSameNumbers() {
         StatsWindow w = minuteWindow();
         Map<String, Object> campaign = stats.campaignStats(CAMPAIGN, w);

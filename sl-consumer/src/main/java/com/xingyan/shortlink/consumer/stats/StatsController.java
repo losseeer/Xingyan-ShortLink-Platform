@@ -66,6 +66,17 @@ public class StatsController {
         return timed("tenant_links", w, () -> ApiResponse.ok(stats.tenantLinks(tenant, w, size, skip)));
     }
 
+    /** 双指标页的时间序列：租户维度的走势（与渠道分布是两种 GROUP BY 轴，不共用一条接口）。 */
+    @GetMapping("/tenants/{tenantId}/timeseries")
+    public Map<String, Object> tenantTimeseries(@PathVariable String tenantId,
+                                                 @RequestParam(required = false) String from,
+                                                 @RequestParam(required = false) String to,
+                                                 @RequestParam(required = false) String granularity) {
+        long tenant = StatsService.requireTenant(tenantId);
+        StatsWindow w = stats.resolveWindow(from, to, granularity);
+        return timed("tenant_timeseries", w, () -> ApiResponse.ok(stats.tenantTimeseries(tenant, w)));
+    }
+
     /** 渠道漏斗页：渠道 → 点击 →（有效／被频控拦下）+ 容器维度。 */
     @GetMapping("/tenants/{tenantId}/channels")
     public Map<String, Object> tenantChannels(@PathVariable String tenantId,

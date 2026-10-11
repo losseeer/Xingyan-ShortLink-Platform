@@ -172,6 +172,25 @@ public class StatsService {
         return data;
     }
 
+    /**
+     * 租户的时间序列（双指标页用）。
+     *
+     * <p>它是第五个接口，不是四条之一——因为做页面的时候才发现"渠道漏斗"那条给不出时间桶：
+     * 那一页要的是渠道分布，双指标要的是随时间的走势，两者的 GROUP BY 轴不同。
+     * 让双指标去借渠道接口的结果，症状是**页面显示"没有点击"而后端一切正常**（M3-07 浏览器实测抓到）。
+     */
+    public Map<String, Object> tenantTimeseries(long tenantId, StatsWindow w) {
+        long started = System.nanoTime();
+        String where = "tenant_id = " + tenantId + " AND " + window(w);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("tenant_id", tenantId);
+        data.putAll(envelope(w));
+        data.put("totals", totals(where));
+        data.put("series", series(where, w));
+        data.put("meta", meta(started));
+        return data;
+    }
+
     /** 渠道漏斗：渠道 → 点击 →（有效／被频控拦下）。转化那一档本期不出（见 6.4 末）。 */
     public Map<String, Object> tenantChannels(long tenantId, StatsWindow w) {
         long started = System.nanoTime();

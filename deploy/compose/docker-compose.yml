@@ -258,7 +258,9 @@ services:
 
   nginx:
     image: nginx:1.27-alpine
-    ports: ["80:80", "443:443"]
+    # 8081 = 主办方看板的静态站 + 同源反代（M3-06，conf.d/40-console.conf）。
+    # 不并到 80：80 上 xy*.test 的 / 已经是数据面的裸短码入口，看板抢不到那个前缀。
+    ports: ["80:80", "443:443", "8081:8081"]
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -267,6 +269,9 @@ services:
       # 所以 Makefile 的 up 目标把 tls 做成前置依赖，而不是让人去读这段报错。
       - ./nginx/html:/etc/nginx/html:ro
       - ./tls:/etc/nginx/tls:ro
+      # 看板构建产物（dist/ 不入库，`make web` 现场生成）。这里空目录的后果比 tls 温和——
+      # nginx 照样起得来，只是所有路径都 404，看起来像"前端坏了"；所以 up 也把它做成前置检查。
+      - ../../sl-console-web/dist:/etc/nginx/console:ro
     # service_started 而非 healthy：nginx 只在启动时解析 upstream 容器名，
     # 要求「已创建」即可；若配 healthy，则验收中 kill 掉 jump-1 后 nginx 无法重启。
     depends_on:

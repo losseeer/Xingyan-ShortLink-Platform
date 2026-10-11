@@ -27,3 +27,6 @@ docs/PROBLEMS_AND_SOLUTIONS.md
 
 # bench 的 python 解析件跑出来的字节码
 __pycache__/
+
+.tutor/
+.tutorignore/

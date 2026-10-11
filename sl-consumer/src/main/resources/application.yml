@@ -30,6 +30,14 @@ spring:
 xsl:
   stats:
     click-topic: ${XSL_CLICK_TOPIC:shortlink-click}
+    # 看板只读接口（M3-05，DESIGN 6.4「看板取数口径」）：不给 from/to 就取最近这么多小时；
+    # 上限 8 天是**实测定的**（ITER-M3 §3）：≤7d 每条 10–35ms，拉到 30d 要读 4,885 万行、
+    # 单条 3.0–4.5s，一页三条查询最多十几秒——那不是"看板"该有的体感，而长窗口对账本来就有
+    # recon-attribution.sh 那条离线路。要放开的前提是先给 click_stat_minute 加 blocked_pv 并重建 MV。
+    default-window-hours: ${XSL_STATS_WINDOW_HOURS:24}
+    max-window-days: ${XSL_STATS_MAX_DAYS:8}
+    list-limit: ${XSL_STATS_LIMIT:20}
+    list-limit-max: ${XSL_STATS_LIMIT_MAX:200}
   ch:
     url: ${XSL_CH_URL:http://localhost:8123/}
     # 专用账号（deploy/compose/init/clickhouse/users.d/xsl-app-user.xml），default 用户仅限容器内

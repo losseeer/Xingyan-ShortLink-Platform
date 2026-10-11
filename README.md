@@ -29,6 +29,7 @@
 | `sl-jump` | 数据面：纯 302 跳转 + 点击事件投递（Kafka / WAL 兜底），不依赖管理面 |
 | `sl-consumer` | 事件消费：批量幂等写 ClickHouse，`GET /api/v1/stats/links/{code}`，每 5 分钟按分钟桶归因回传（M3-03） |
 | `sl-mock` | mock 宣发平台（M3-03 起进 reactor）：接收归因回传（验签 + 校验和 + `batch_id` 幂等 + 按桶覆盖），落独立库 `xsl_mock`；假订单接口随 M3-04 |
+| `sl-console-web` | 主办方看板（M3-06 起，仓库里第一个前端）：Vue 3 + Vite + ECharts 三页只读视图，不在 Maven reactor 里、`dist/` 不入库；由 nginx 在 **8081** 静态托管并同源反代只读统计 |
 | `deploy/` | `compose/`（编排、nginx、MySQL/ClickHouse 初始化、`overrides/` 压测叠加、`.env` 不入库）、`docker/`（应用镜像 Dockerfile）、`maven/`（构建 settings） |
 | `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
 | `bench/` | 压测脚本、wrk lua、`reports/` 存档（DESIGN 1.3 的数字只引用这里） |
@@ -49,12 +50,15 @@
 make devenv     # 生成 deploy/compose/.env（已存在则不覆盖）
 make verify     # 全仓单元 + 活体集成测试（需 Docker 已起，MySQL 3307 / Redis 6380）
 make images     # 宿主 mvn package 产物 + JRE 一层 → xsl/{gateway,admin,jump,consumer}:dev
+make web        # 看板前端：npm install + vite build → sl-console-web/dist（`make up` 会检查它在不在）
 make up         # docker compose up -d --wait，十个容器全部 healthy（前置 make tls，见下）
 make db-init    # MySQL schema 幂等重放（全新数据卷由镜像 entrypoint 自动执行）
 make ch-init    # ClickHouse 应用账号 xsl_app（口令从 .env 经 SQL 写入，不落仓库）
 make seed       # 灌网关鉴权所需 api_key → tenant 字典
 make demo       # 一键演示，见下节（内部已含 db-init/ch-init/seed）
 ```
+
+看板起来后开 **http://xy1.test:8081/**（需要 hosts 里那条 `127.0.0.1  xy1.test`；直接开 http://127.0.0.1:8081/ 也行）。三页都是只读的：短码入口仍在 80，看板只是把 `/api/v1/stats/**` 在同一台 nginx 上转给 consumer。
 
 `make up` 会先跑 `make tls`：为 mock 购票页生成**本地自签证书**到 `deploy/compose/tls/`（幂等、已 gitignore）。
 这一步不是装饰——短链 302 的终点是 `https://mock.ticketsales.test/…`，nginx 不在 443 上应答就打不开；
@@ -117,6 +121,7 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test mock.ticketsales.test' | sudo tee -a 
 | `scripts/accept-m2-35.sh` | **M2 出口标准**：15 条 UA 重放断 target_type／响应形态／中间页内容与 `no-store`／跨维度 priority 排序／无匹配落 origin／CH 取数／跟着打到 mock 购票页／`XSL_JUMP_MODE=direct302` 回退与复位 |
 | `scripts/accept-m3-02.sh` | outbox 补偿：双实例亚秒收敛（前置断言「L1 确实是热的」）、缺行成对补齐后 404→302、落后快照回正、**旧事件重放绝不倒退**（表与缓存都验）、坏事件到上限置 2 并进积压指标、`XSL_OUTBOX_SYNC` 开关透传、整批重放的耗时与广播条数 |
 | `scripts/accept-m3-03.sh` | 归因回传：端到端闭环（平台侧四个量 == CH 明细现算值）、`batch_id` 幂等与 `times_received`、校验和篡改 400 且台账不留行、错签/越窗/越权/无签名头各自 401·403、**迟到事件覆盖旧桶值**（不是被幂等丢掉）、10 分钟窗口扫明细的 read_rows/耗时、`XSL_PUSH_ENABLED` 开关与定时真的会跑 |
+| `scripts/accept-m3-05.sh` | **M3 出口标准的第二条**：铺一批形状已知的真点击（含一条极低配额的链接专门造出"被频控拦下"那一档），然后**五条只读接口的每个字段与脚本独立实现的 ClickHouse 直查逐个相等（0 容差，本轮共 69 个字段）**；边界段把护栏当被测对象（>8 天窗口 / from>to / 粒度不认识 / 租户非数字 / 短码带引号 / limit 越界都必须 400，空窗口必须是 0 而不是 500，别的租户看不到本轮的码）；交付面段钉静态件与缓存头，并逐条检查**页面绑定的字段路径真的在响应里**（借错接口那类失败只有这层网兜得住） |
 | `scripts/recon-attribution.sh` | **日常核对工具**（不是验收脚本，T+1 也用这个）：给一个 `campaign_id` 就报 ① 传输完整性差异、② 订单↔点击的可 join 命中率、聚合表偏差（只打印不判），按阈值给退出码、可直接接告警。窗口可给可不给（不给就按明细自推区间），阈值 `--max-diff`/`--min-join` 可调，`--keep-bad` 只报数不变红 |
 | `scripts/accept-m3-04.sh` | **M3 出口标准**：抓 302 上的真实 `xy_click_id` → 落明细 → 分钟关闭 → 回传 → 用它下单；① 差异 **0.00%** / ② 命中率 **100.00%**；订单幂等（重发不重复计入、`times_submitted` 可查）与坏输入 400 不留半行；**两组负向样本**——注入引用不存在 `click_id` 的订单必须报出恰好 3 条缺失，"只点击、不回传"那批必须报 100.00% 而不是 `n/a`；阈值旋钮调到不可能满足时必须变红（证明那个 PASS 不是写死的） |
 | `scripts/demo.sh` | 端到端演示（`make demo`） |
@@ -147,4 +152,6 @@ M2 收口时留下的待办：行为评分规则表（`risk_score` 已可写、`
 **M3-03 归因回传 + mock 宣发平台已于 2026-10-11 收口**（`scripts/accept-m3-03.sh` **37/37**）：点击侧的分钟桶现在会主动推给"外部平台"——`sl-mock` 从只有 README 的占位目录变成 reactor 里的第 6 个模块（端口 8050、独立库 `xsl_mock`、**不挂 nginx 对外路由**，因为它扮演的就是外部系统）。发送端在 sl-consumer 的 `@Scheduled`（5 分钟一轮、回看 3 个已关闭分钟），事实源取 **`click_event` 明细 `FINAL`** 现算 `pv/uv/valid_pv/bot_pv`——实测 10 分钟窗口只读 6,755 行 / 263 KB / 5ms（表内 4,836 万行），所以**不给聚合表加 `valid_pv` 列**，那个"数字不可接受就换"的出口当场关闭。三件语义都有断言兜着：`batch_id` 由「窗口 + 内容 hash」算出（所以迟到变全的那一版是**覆盖**而不是被幂等丢掉）、接收端自己重算校验和与 id（篡改 `pv` → 400 且台账一颗不涨）、同 `batch_id` 重投只加 `times_received`（数值不重复计入）。`bot_pv` 恒 0、`valid_pv` 现在等于放行数——这是评分层未做的**能力边界**，口径写死在 DESIGN 6.4，式子已就位等数据变准。
 
 **M3-04 端到端归因对账已于 2026-10-11 收口**（`scripts/accept-m3-04.sh` **78/78**），M3 的出口标准"端到端归因对账误差 < 2%"第一次有了可点达的实测：**① 传输完整性差异 0.00%、② 归因可 join 命中率 100.00%**。做法是脚本扮演购票用户——从 302 的 `Location` 抓真实 `xy_click_id`（形态 `c`+雪花），确认它已落进 ClickHouse 明细、等分钟关闭、触发一轮回传，再拿同一个 `click_id` 去 mock 的假订单接口下单；订单侧 `order_id` 是幂等键（重发 3 笔只加 `times_submitted`、行数不动，否则"用户双击"会把 ② 的分母弄虚高，症状长得像"转化率莫名偏低"）。对账本身拆成两份：`scripts/recon-attribution.sh` 是可反复跑、按阈值给退出码的**核对工具**（T+1 手工核对也是它），`accept-m3-04.sh` 负责铺数据与断言。**两条判定式各配了负向样本**：注入 3 条引用不存在 `click_id` 的订单，工具报出的缺失恰好是 3 且退出码变红；另起一批"只点击、不回传"的活动，差异必须报 **100.00% 而不是 `n/a`**——"没数"与"丢数"得是两个能区分的值，否则最坏的失败形态会伪装成无害的数字。阈值旋钮也被证明是活的（`--max-diff 0`、`--min-join 101` 各自只红自己那一条）。诚实的边界：0.00% 是 mock 闭环的性质（两端同机、时钟同源），阈值是给生产留的余量；`<2%` 达成不等于链路无损。
+
+**M3-05…M3-08 主办方看板已于 2026-10-11 收口**（`scripts/accept-m3-05.sh` **55/55**），M3 出口标准的第二条"看板三页面数据与 ClickHouse 直查一致"由此变成可重跑的：脚本先铺一批**形状已知**的点击（两条不同渠道 + 一条极低配额链接专门造出"被频控拦下"那一档，实测 `blocked_pv=3`），再让五条只读接口的**每个字段**与脚本自己独立实现的一份直查算式逐个相等——**0 容差，本轮共 69 个字段**。取数代价那条"由数字决定"也落了地：24h/7d 档每条 **7–35ms**，30d 档要读 4,885 万行、单条 **3.0–4.5s** ⇒ 不给聚合表加列、不动 MV，改为把**窗口上限压到 8 天**（超出直接 400），长窗口交给 `recon-attribution.sh`。前端是仓库第一个：`sl-console-web/`（Vue 3 + Vite + ECharts，按决定去掉了 Element Plus，也不引 TS/Pinia），nginx 在 **8081** 静态托管 + 同源反代，浏览器里不放任何密钥——那把 `api_key` 本身就是 HMAC secret；代价如实写在 DESIGN 7.2 与 9.1 的风险表里（只读聚合数字对能访问入口的人开放）。做页面时才发现接口是**五条**不是四条（双指标要的是租户时间序列，与渠道分布不是同一条 `GROUP BY` 轴），加上路由键形态写错——这两处 `make verify` 与 curl 全绿、只有真开浏览器才看得见，于是"页面绑定的字段必须真的在响应里"这层形状检查被补进了验收。
 

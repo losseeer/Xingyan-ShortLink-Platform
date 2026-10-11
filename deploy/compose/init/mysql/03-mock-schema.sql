@@ -44,3 +44,24 @@ CREATE TABLE IF NOT EXISTS xsl_mock.attribution_stat (
   PRIMARY KEY (tenant_id, campaign_id, channel_id, minute),
   KEY idx_window (minute, campaign_id)
 ) ENGINE=InnoDB;
+
+-- 假订单（DESIGN 附录 B 的落点，M3-04）：订单侧带回来的归因字段。
+-- 表名带 mock_ 前缀是没办法的事：order 是 MySQL 保留字，裸用它得在每条 SQL 里加反引号。
+-- 幂等键就是订单号本身——真实形态里 order_id 本来就是购票系统生成的，用它最自然；
+-- 不做幂等的话"用户双击提交"会把订单数算虚高，端到端对账 ② 的分母当场失真（times_submitted 让这个吸收可观测）。
+-- 这一跳（购票页后端 → 平台）两端都在 mock 侧，所以不鉴权，理由写在 DESIGN 附录 B 的 v2.13.0 那段。
+CREATE TABLE IF NOT EXISTS xsl_mock.mock_order (
+  order_id         VARCHAR(64) NOT NULL COMMENT '调用方（购票侧）生成的订单号，同时是幂等键',
+  click_id         VARCHAR(64) NOT NULL COMMENT '附录 B 的对账键 = 跳转 URL 上的 xy_click_id',
+  channel_id       VARCHAR(64) NOT NULL DEFAULT '',
+  campaign_id      VARCHAR(64) NOT NULL DEFAULT '',
+  promoter_id      VARCHAR(64) NOT NULL DEFAULT '',
+  first_click_time DATETIME    NULL COMMENT '首次归因口径由平台侧配置（附录 B），mock 只负责把带回来的值存下',
+  last_click_time  DATETIME    NULL,
+  times_submitted  INT         NOT NULL DEFAULT 1 COMMENT '同一 order_id 被提交几次（重复提交不重复计入的观测）',
+  create_time      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (order_id),
+  KEY idx_click (click_id),
+  KEY idx_campaign (campaign_id, create_time)
+) ENGINE=InnoDB;

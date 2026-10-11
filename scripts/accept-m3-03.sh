@@ -149,8 +149,11 @@ trap cleanup EXIT
 echo "== M3-03 归因回传（run=$RUN campaign=$CP）=="
 HEALTH=$(curl -s -m 5 "$MOCK/actuator/health")
 truthy "P0-mock-up" "$( [[ "$HEALTH" == *'"status":"UP"'* ]] && echo 1 || echo 0 )" "mock 宣发平台健康"
-T_TABLES=$(MY "SELECT count(*) FROM information_schema.tables WHERE table_schema='xsl_mock';" | head -1)
-if [[ "${T_TABLES:-0}" != "2" ]]; then echo "FATAL xsl_mock 的表还没建（当前 $T_TABLES 张）：先 make db-init"; exit 1; fi
+# 按**表名**要这两张，而不是数"库里一共几张表"：M3-04 给 xsl_mock 加了 mock_order 之后，
+# 写死 2 的旧断言会 FATAL 在"P0"上——而 P0 报的是"表还没建"，方向完全错。
+# 本脚本只用到 attribution_batch / attribution_stat，将来再多表也不该把它拦下来。
+T_TABLES=$(MY "SELECT count(*) FROM information_schema.tables WHERE table_schema='xsl_mock' AND table_name IN ('attribution_batch','attribution_stat');" | head -1)
+if [[ "${T_TABLES:-0}" != "2" ]]; then echo "FATAL xsl_mock 缺回传要用的表（attribution_batch/attribution_stat 当前 $T_TABLES 张）：先 make db-init"; exit 1; fi
 check "P0-mock-schema" 2 "$T_TABLES"
 
 # ---------------- A. 端到端闭环 ----------------

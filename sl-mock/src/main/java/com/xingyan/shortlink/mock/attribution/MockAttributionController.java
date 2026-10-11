@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xingyan.shortlink.common.api.ApiResponse;
 import com.xingyan.shortlink.common.error.ErrorCode;
 import com.xingyan.shortlink.common.security.HmacSigner;
+import com.xingyan.shortlink.mock.MockRejectException;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;

@@ -49,6 +49,15 @@ class LinkServiceIntegrationTest {
     private static final long TENANT_B = 1002;
     private static final String OK_URL = "https://mock.ticketsales.test/show/1";
 
+    /**
+     * 本类写死复用的自定义短码。{@code @AfterEach} 只清"本轮真正建出来的那些"，所以上一轮被打断
+     * （Ctrl-C、容器重启、或 infraUp() 在那一刻返回 false 让收尾的 assumeTrue 直接跳过）就会把它们留在库里，
+     * 下一轮 create() 于是 409 "custom short code already used"——红的是开局而不是被测行为（M3-04 回归就撞上了）。
+     * 开局按名字扫一遍，把"能不能重跑"从"上一轮是否跑完"手里拿回来：这些名字归本类专用，扫掉的只可能是自己的 fixture。
+     */
+    private static final List<String> FIXED_CODES = List.of("dupcode01", "owncode1", "multiten01",
+            "multiten02", "jsonchk01", "ruleord01", "ruletype1");
+
     private static LettuceConnectionFactory redisFactory;
     private static StringRedisTemplate redis;
     private static com.zaxxer.hikari.HikariDataSource ssDs;
@@ -84,6 +93,7 @@ class LinkServiceIntegrationTest {
         assumeTrue(infraUp());
         redis.delete(List.of("sl:pool:" + NS, "sl:pool:" + NS + ":seen", "sl:pool:refill:lock:" + NS));
         jdbc.update("DELETE FROM short_code_pool WHERE namespace = ?", NS);
+        sweepFixedCodes();
         ObjectMapper mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
@@ -117,6 +127,18 @@ class LinkServiceIntegrationTest {
             redis.delete(List.of("sl:r:" + code, "sl:code:" + code));
         }
         createdCodes.clear();
+    }
+
+    private void sweepFixedCodes() {
+        String ph = FIXED_CODES.stream().map(c -> "?").collect(Collectors.joining(","));
+        Object[] args = FIXED_CODES.toArray();
+        for (String table : List.of("short_link", "link_route", "code_tenant_index", "route_rule", "short_code_pool")) {
+            jdbc.update("DELETE FROM " + table + " WHERE short_code IN (" + ph + ")", args);
+        }
+        jdbc.update("DELETE FROM outbox WHERE aggregate_id IN (" + ph + ")", args);
+        for (String code : FIXED_CODES) {
+            redis.delete(List.of("sl:r:" + code, "sl:code:" + code));
+        }
     }
 
     private static final ObjectMapper JSON = new ObjectMapper();

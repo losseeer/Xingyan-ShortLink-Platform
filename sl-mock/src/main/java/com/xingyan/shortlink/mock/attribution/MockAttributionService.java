@@ -3,6 +3,7 @@ package com.xingyan.shortlink.mock.attribution;
 import com.xingyan.shortlink.common.attribution.AttributionBatchCodec;
 import com.xingyan.shortlink.common.attribution.AttributionStat;
 import com.xingyan.shortlink.common.error.ErrorCode;
+import com.xingyan.shortlink.mock.MockRejectException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;

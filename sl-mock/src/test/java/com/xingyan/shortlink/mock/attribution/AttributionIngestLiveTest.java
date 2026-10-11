@@ -2,6 +2,7 @@ package com.xingyan.shortlink.mock.attribution;
 
 import com.xingyan.shortlink.common.attribution.AttributionBatchCodec;
 import com.xingyan.shortlink.common.attribution.AttributionStat;
+import com.xingyan.shortlink.mock.MockRejectException;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.AfterAll;

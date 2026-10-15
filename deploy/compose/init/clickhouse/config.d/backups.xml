@@ -1,0 +1,12 @@
+<clickhouse>
+  <!-- BACKUP / RESTORE 的路径白名单（M3-09，DESIGN 8.3 第六行）。
+       不开这一项，`BACKUP TABLE … TO File('/var/lib/clickhouse/backups/x')` 会以
+       Code 36 "Path … is not allowed for backups" 直接失败——而 `make backup` 的承诺是
+       "备份文件真能读回来"，第一步就写不出文件。
+       只给容器内这一个目录，不给 `/`：白名单的意义就是让一条 SQL 写不出宿主机任意路径。
+       落出来的目录由 scripts/backup.sh 用 `docker cp` 取到 deploy/backup/，
+       于是"文件离开了数据库容器"这件事本身也是被验证过的一步。 -->
+  <backups>
+    <allowed_path>/var/lib/clickhouse/backups/</allowed_path>
+  </backups>
+</clickhouse>

@@ -31,7 +31,7 @@
 | `sl-mock` | mock 宣发平台（M3-03 起进 reactor）：接收归因回传（验签 + 校验和 + `batch_id` 幂等 + 按桶覆盖），落独立库 `xsl_mock`；假订单接口随 M3-04 |
 | `sl-console-web` | 主办方看板（M3-06 起，仓库里第一个前端）：Vue 3 + Vite + ECharts 三页只读视图，不在 Maven reactor 里、`dist/` 不入库；由 nginx 在 **8081** 静态托管并同源反代只读统计 |
 | `deploy/` | `compose/`（编排、nginx、MySQL/ClickHouse 初始化、`overrides/` 压测叠加、`.env` 不入库）、`docker/`（应用镜像 Dockerfile）、`maven/`（构建 settings） |
-| `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
+| `scripts/` | 一任务一验收脚本 `accept-m1-NN.sh` + 演练脚本 `drill-8-3.sh`/`drill-domain-switch.sh` + 备份与读回验证 `backup.sh`/`restore-verify.sh` + 镜像构建/演示/凭据相关脚本，口令统一经 `lib-devenv.sh` 从 `.env` 取 |
 | `bench/` | 压测脚本、wrk lua、`reports/` 存档（DESIGN 1.3 的数字只引用这里） |
 | `docs/` | `DESIGN.md`（设计）、`DEVELOPMENT_PLAN.md`（计划与工程约定）、`iterations/ITER-<M>.md`（每期流水）+ 模板 |
 
@@ -56,6 +56,8 @@ make db-init    # MySQL schema 幂等重放（全新数据卷由镜像 entrypoin
 make ch-init    # ClickHouse 应用账号 xsl_app（口令从 .env 经 SQL 写入，不落仓库）
 make seed       # 灌网关鉴权所需 api_key → tenant 字典
 make demo       # 一键演示，见下节（内部已含 db-init/ch-init/seed）
+make backup     # 备份：mysqldump 三库 + ClickHouse BACKUP 两张表 → deploy/backup/<ts>/（约 1.7G，不入库）
+make restore-verify  # 读回验证：dump 灌一次性容器逐表比行数、CH 备份 RESTORE 成影子表比 count 后 DROP
 ```
 
 看板起来后开 **http://xy1.test:8081/**（需要 hosts 里那条 `127.0.0.1  xy1.test`；直接开 http://127.0.0.1:8081/ 也行）。三页都是只读的：短码入口仍在 80，看板只是把 `/api/v1/stats/**` 在同一台 nginx 上转给 consumer。
@@ -121,6 +123,8 @@ echo '127.0.0.1 xy1.test xy2.test xy3.test mock.ticketsales.test' | sudo tee -a 
 | `scripts/accept-m2-35.sh` | **M2 出口标准**：15 条 UA 重放断 target_type／响应形态／中间页内容与 `no-store`／跨维度 priority 排序／无匹配落 origin／CH 取数／跟着打到 mock 购票页／`XSL_JUMP_MODE=direct302` 回退与复位 |
 | `scripts/accept-m3-02.sh` | outbox 补偿：双实例亚秒收敛（前置断言「L1 确实是热的」）、缺行成对补齐后 404→302、落后快照回正、**旧事件重放绝不倒退**（表与缓存都验）、坏事件到上限置 2 并进积压指标、`XSL_OUTBOX_SYNC` 开关透传、整批重放的耗时与广播条数 |
 | `scripts/accept-m3-03.sh` | 归因回传：端到端闭环（平台侧四个量 == CH 明细现算值）、`batch_id` 幂等与 `times_received`、校验和篡改 400 且台账不留行、错签/越窗/越权/无签名头各自 401·403、**迟到事件覆盖旧桶值**（不是被幂等丢掉）、10 分钟窗口扫明细的 read_rows/耗时、`XSL_PUSH_ENABLED` 开关与定时真的会跑 |
+| `scripts/drill-8-3.sh` | **M3 出口标准的第三条**：DESIGN 8.3 那张降级预案表逐行真跑一遍（**36/36**）。每行都是"停 → 断言**行为** → 起 → 记恢复秒数"，不是断言"容器停了"：J 进程崩溃 19s 自愈 / 474 击零 5xx（并把 `docker kill` 拆成另一件事，因为 restart 策略不覆盖人为停止）；C 五条 stats 全 **503** 且是 `SL-5000` 错误信封而不是空数据、恢复后 517/517 一行不少；K 348 击 → WAL 348 行 → 明细 348 行、lag 归零；R 冷码靠 `link_route` 直读仍 302、频控退化 `mode=local`、**每击 44ms → 560ms**，且先探测到两实例都收到广播（12s）才断跨实例封禁；M 热码 269/269、`POST /links` 失败得可见（500 + 不回 `short_code`）、stats 照读、冷码 504 恢复后 302。原始计数与容器内存实测追加进 `bench/reports/2026-10-15-1501-m3-drill-8-3.md` |
+| `scripts/backup.sh` + `scripts/restore-verify.sh` | DESIGN 8.3 第六行"数据丢失"的两半（`make backup` / `make restore-verify`，**本轮从零建起来——此前那行的"验证方式"写着一个根本不存在的目标**）：备份 = mysqldump 三库 + ClickHouse `BACKUP` 两张表（1.7 G）落 `deploy/backup/<ts>/`（不入库），并在备份前后各取一次全库行数、不相等就停住；读回 = dump 灌进**一次性容器**（tmpfs、不发布端口、`--rm`）**16 张表逐表行数与清单精确相等**，CH 备份 `RESTORE … AS xsl.*_vfy` 建**影子表**比完即 DROP——明细比行数区间、聚合比六项指标（`SummingMergeTree` 会折叠同键行，行数天生不是稳定量），两边都不碰现有数据 |
 | `scripts/drill-domain-switch.sh` | 多域名切换演练（9.5）：三域等价（去掉本次 `xy_click_id` 后逐字符相同、每击一个新 id）、`weight` 全等时稳定选中字典序最小的域、封禁一条域后 **31s** 新码换域、**存量码在旧域仍能跳转**、`switch_time` 落库、选域指标读得到、复位后切回 |
 | `scripts/accept-m3-05.sh` | **M3 出口标准的第二条**：铺一批形状已知的真点击（含一条极低配额的链接专门造出"被频控拦下"那一档），然后**五条只读接口的每个字段与脚本独立实现的 ClickHouse 直查逐个相等（0 容差，本轮共 69 个字段）**；边界段把护栏当被测对象（>8 天窗口 / from>to / 粒度不认识 / 租户非数字 / 短码带引号 / limit 越界都必须 400，空窗口必须是 0 而不是 500，别的租户看不到本轮的码）；交付面段钉静态件与缓存头，并逐条检查**页面绑定的字段路径真的在响应里**（借错接口那类失败只有这层网兜得住） |
 | `scripts/recon-attribution.sh` | **日常核对工具**（不是验收脚本，T+1 也用这个）：给一个 `campaign_id` 就报 ① 传输完整性差异、② 订单↔点击的可 join 命中率、聚合表偏差（只打印不判），按阈值给退出码、可直接接告警。窗口可给可不给（不给就按明细自推区间），阈值 `--max-diff`/`--min-join` 可调，`--keep-bad` 只报数不变红 |
@@ -157,4 +161,6 @@ M2 收口时留下的待办：行为评分规则表（`risk_score` 已可写、`
 **M3-05…M3-08 主办方看板已于 2026-10-11 收口**（`scripts/accept-m3-05.sh` **55/55**），M3 出口标准的第二条"看板三页面数据与 ClickHouse 直查一致"由此变成可重跑的：脚本先铺一批**形状已知**的点击（两条不同渠道 + 一条极低配额链接专门造出"被频控拦下"那一档，实测 `blocked_pv=3`），再让五条只读接口的**每个字段**与脚本自己独立实现的一份直查算式逐个相等——**0 容差，本轮共 69 个字段**。取数代价那条"由数字决定"也落了地：24h/7d 档每条 **7–35ms**，30d 档要读 4,885 万行、单条 **3.0–4.5s** ⇒ 不给聚合表加列、不动 MV，改为把**窗口上限压到 8 天**（超出直接 400），长窗口交给 `recon-attribution.sh`。前端是仓库第一个：`sl-console-web/`（Vue 3 + Vite + ECharts，按决定去掉了 Element Plus，也不引 TS/Pinia），nginx 在 **8081** 静态托管 + 同源反代，浏览器里不放任何密钥——那把 `api_key` 本身就是 HMAC secret；代价如实写在 DESIGN 7.2 与 9.1 的风险表里（只读聚合数字对能访问入口的人开放）。做页面时才发现接口是**五条**不是四条（双指标要的是租户时间序列，与渠道分布不是同一条 `GROUP BY` 轴），加上路由键形态写错——这两处 `make verify` 与 curl 全绿、只有真开浏览器才看得见，于是"页面绑定的字段必须真的在响应里"这层形状检查被补进了验收。
 
 **M3-10 多域名切换已于 2026-10-11 演练通过**（`scripts/drill-domain-switch.sh` **13/13**）：DESIGN 9.5 那句"domain_pool 表与切换机制完整实现"此前只有表是真的——生效域其实是`XSL_LINK_BASE_DOMAIN` 一个环境变量，没有一行代码读那张表。现在 admin 创建链接时按`status=0 → weight DESC → domain ASC` 从表里选（30s 缓存；平手必须排死，否则"切到了哪个域"就成了随机事件、演练没法断言），把某个域置 `status=2` 就是一次切域：**31 秒后**新建的链接换到下一个域（这个界就是缓存 TTL，不是链路慢；要立刻定住域走 `XSL_DOMAIN_POOL=false`），而**存量码在旧域仍然照常跳转**——封禁的语义是"不再用它发新码"，不是把发出去的宣传物料全部作废。字典库读不到就退回兜底域名并计数 `xsl_domain_pool_total{result=fallback}`，连接超时压到 1.5s：活体测试跑出 30.3s 才发现 Hikari 默认要等 30 秒，那会把"创建链接"整个拖住。
+
+**M3-09 降级演练已于 2026-10-15 把 8.3 那张表逐行跑完**（`scripts/drill-8-3.sh` **36/36**，存档 `bench/reports/2026-10-15-1501-m3-drill-8-3.md`），DESIGN 第十章那行 M3 的三条出口标准到此全部达成。这一格的价值不在"跑了一遍"，而在**三条只有把容器停下来才浮出来的事实**，它们改写了文档原来的写法：**① `restart: always` 只管"进程自己死了"**——`docker kill` 之后 20s 仍停在 `exited`（Docker 把人为停止排除在重启策略之外），而容器内 PID 1 被 `kill -9` 之后 19s 自动回 healthy、期间 474 击零 5xx；**② 管理面没有熔断器**——MySQL 挂时创建链接确实不会静默成功（500 + `SL-5000`、响应里没有 `short_code`），但快慢不稳（本轮 0s，上一次排练同一处耗满 30s 才由客户端放弃），所以 8.3 那句"管理面熔断"已改成"快速失败"；**③ 回源那条预案只有冷码才走到**——热码被 Caffeine 全接住，第一版把断言挂在热码上量到 `route_lookup{level="db"}` 0→0，那不是没回源而是没必要回源。顺带把 Redis 挂时的**代价**量出来了：可用性不掉（零 5xx、302 全拿到），**每击 44ms → 560ms**，因为每一击都要先等 Redis 调用失败才回落。**M3 十格到此全部收口**；不在 8.3 六行内的两项形态（Redis 停机期间那次配置变更的收敛、宣发平台不可达时 consumer 继续消费）照实留在 `docs/iterations/ITER-M3.md` §6 并各附解除条件，不当成已覆盖。
 

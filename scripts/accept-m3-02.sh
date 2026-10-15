@@ -118,7 +118,9 @@ cleanup() {
         DELETE FROM xsl_00.code_tenant_index WHERE short_code IN $in; DELETE FROM xsl_01.code_tenant_index WHERE short_code IN $in;
         DELETE FROM xsl_00.outbox WHERE aggregate_id IN $in; DELETE FROM xsl_01.outbox WHERE aggregate_id IN $in;
         DELETE FROM xsl_00.short_code_pool WHERE short_code IN $in; DELETE FROM xsl_01.short_code_pool WHERE short_code IN $in;" >/dev/null
-    while read -r c; do $RCLI DEL "sl:r:$c" "sl:r:nx:$c" "sl:code:$c" >/dev/null; done < "$CODE_FILE"
+    # 用 for 而不是 `while read … < 文件`：`docker compose exec -T` 会把循环的 stdin 喝干，
+    # 原来这行只删得掉第一个码的键（M3-09 演练的清理段撞上同一个坑，见 drill-8-3.sh 那条注释）。
+    for c in $(cat "$CODE_FILE"); do $RCLI DEL "sl:r:$c" "sl:r:nx:$c" "sl:code:$c" >/dev/null; done
     rm -f "$CODE_FILE"
   fi
   MY "DELETE FROM xsl_00.outbox WHERE event_type LIKE 'M302-LOAD%'; DELETE FROM xsl_01.outbox WHERE event_type LIKE 'M302-LOAD%';" >/dev/null

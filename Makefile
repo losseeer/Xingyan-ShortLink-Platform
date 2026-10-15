@@ -15,7 +15,7 @@ DEVENV := deploy/compose/.env
 -include $(DEVENV)
 export XSL_MYSQL_PASSWORD XSL_CH_PASSWORD GRAFANA_PASSWORD
 
-.PHONY: print-java verify up down ps logs demo db-init ch-schema seed ch-init images nginx-reload devenv tls mysql-rotate web console-dist
+.PHONY: print-java verify up down ps logs demo db-init ch-schema seed ch-init images nginx-reload devenv tls mysql-rotate web console-dist backup restore-verify
 
 # 首次使用：make devenv 生成随机口令（0600），或 cp .env.example .env 后手工填
 devenv:
@@ -110,6 +110,16 @@ nginx-reload:
 # 从零复现口径：先 `docker compose -f deploy/compose/docker-compose.yml down -v` 再 make demo。
 demo:
 	@bash scripts/demo.sh
+
+# 备份（DESIGN 8.3 第六行，M3-09）：mysqldump 三库 + ClickHouse BACKUP 两张表，落 deploy/backup/<ts>/。
+# 产物不入库（一次约 2G），也不装 cron——调度是运维的事，本仓库只保证一件事：文件真能读回来。
+backup:
+	@bash scripts/backup.sh
+
+# 读回验证：MySQL dump 灌一次性容器逐表比行数、CH 备份 RESTORE 成影子表比计数后 DROP，两边都不碰现有卷。
+# 与 backup 是一对：单独跑哪一半都只是在猜测。
+restore-verify:
+	@bash scripts/restore-verify.sh $(BACKUP_DIR)
 
 print-java:
 	@echo "JAVA_HOME=$(JAVA_HOME)"

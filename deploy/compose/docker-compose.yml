@@ -108,6 +108,8 @@ services:
       - ./init/clickhouse:/docker-entrypoint-initdb.d:ro
       # 给容器内 default 用户开 access_management，否则 `make ch-init` 的 CREATE/GRANT 会被拒
       - ./init/clickhouse/users.d/local-admin.xml:/etc/clickhouse-server/users.d/local-admin.xml:ro
+      # BACKUP/RESTORE 的路径白名单：不开则 `make backup` 第一步就写不出文件（DESIGN 8.3 第六行，M3-09）
+      - ./init/clickhouse/config.d/backups.xml:/etc/clickhouse-server/config.d/backups.xml:ro
       # 应用账号 xsl_app 不写进 users.d XML —— 那种文件只能落明文口令，一入库就等于泄露。
       # 改由 `make ch-init`（scripts/init-ch-user.sh）用 CREATE/ALTER USER + GRANT 建号，
       # 口令运行时从 deploy/compose/.env 经 SQL 进容器；全新卷与已有卷走同一条路径。
